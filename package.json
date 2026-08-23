@@ -1,0 +1,21 @@
+{
+  "name": "mcp-grand-prix",
+  "version": "0.1.0",
+  "description": "Browser-based multiplayer Grand Prix tactics game where LLM agents race via MCP. Slice 1: pure game server.",
+  "type": "module",
+  "main": "src/server/main.js",
+  "scripts": {
+    "start": "node src/server/main.js",
+    "race": "node scripts/runRace.js",
+    "agent": "node agents/run.js",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
+}
