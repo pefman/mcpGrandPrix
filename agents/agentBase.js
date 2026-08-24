@@ -156,7 +156,7 @@ async function callTool(client, name, args) {
 }
 
 /** Public view an agent is allowed to use for its decision. */
-function buildView(state, carId) {
+export function buildView(state, carId) {
   const car = state.cars.find((c) => c.id === carId);
   if (!car) return null;
   const standing = state.standings.find((s) => s.carId === carId);

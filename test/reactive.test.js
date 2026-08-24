@@ -14,6 +14,7 @@ import {
   randomReactive,
 } from '../src/sim/strategies.js';
 import { allowedActionsFor, parseReactiveAction } from '../src/sim/reactive.js';
+import { runScriptedSim, driveWindows, closeServer, WINDOW_BACKSTOP_S } from './helpers.js';
 
 describe('reactive action helpers', () => {
   it('allowedActionsFor covers MVP triggers', () => {
@@ -54,20 +55,6 @@ describe('reactive action helpers', () => {
   });
 });
 
-/**
- * Acceptance (MCPG-15): a 10-lap scripted race produces ≥2 reactive windows,
- * every trigger/response is logged, and the race finishes cleanly.
- */
-const TOTAL_LAPS = 10;
-const WINDOW_SECONDS = 0.8;
-
-let session;
-let server;
-let baseUrl;
-let logFile;
-let runPromise;
-let agentSummaries = [];
-
 const AGENTS = [
   { profile: 'aggressive', name: 'Aggro', seed: 201 },
   { profile: 'conservative', name: 'Turtle', seed: 202 },
@@ -75,14 +62,88 @@ const AGENTS = [
   { profile: 'random', name: 'Randy', seed: 204 },
 ];
 
+/**
+ * Acceptance (MCPG-15), sim-level: a 10-lap scripted race produces >= 2
+ * reactive windows, every affected car gets a logged response, and the race
+ * finishes cleanly. Run directly against the Simulation (same scripted
+ * policies and seeds as the e2e below, windows closed on submit), so the
+ * window sequence is deterministic and the test costs milliseconds instead
+ * of a real-time race — that is the point of keeping the acceptance
+ * criterion here rather than in the slow e2e.
+ */
+describe('10-lap scripted race (MCPG-15 acceptance, deterministic sim-level)', () => {
+  const TOTAL_LAPS = 10;
+  let result;
+
+  beforeAll(() => {
+    result = runScriptedSim(TOTAL_LAPS, 77, AGENTS);
+  });
+
+  it('finishes cleanly with all four cars', () => {
+    expect(result.sim.phase).toBe('finished');
+    const standings = result.sim.standings();
+    expect(standings).toHaveLength(4);
+    for (const s of standings) {
+      expect(s.status).toBe('FINISHED');
+      expect(s.completedLaps).toBe(TOTAL_LAPS);
+    }
+  });
+
+  it('opens at least 2 reactive windows and logs a response for every affected car', () => {
+    const events = result.events;
+    const opened = events.filter((e) => e.type === 'reactive_window_opened');
+    const closed = events.filter((e) => e.type === 'reactive_window_closed');
+    expect(opened.length, 'expected >= 2 reactive windows in a 10-lap race').toBeGreaterThanOrEqual(2);
+    expect(closed.length).toBe(opened.length);
+
+    // Every opened window has a logged response for each affected car
+    // (submitted and/or defaulted on close).
+    for (const w of opened) {
+      const responses = events.filter(
+        (e) =>
+          (e.type === 'reactive_action_submitted' || e.type === 'reactive_action_defaulted') &&
+          e.windowId === w.windowId,
+      );
+      expect(responses.length, `window ${w.windowId} has no logged actions`).toBe(w.carIds.length);
+    }
+
+    // Triggers are from the MVP set.
+    for (const w of opened) {
+      expect(['close_battle', 'critical_tire_wear', 'pit_opportunity']).toContain(w.trigger);
+    }
+
+    // Agents actually decided (not everything defaulted).
+    const submitted = events.filter((e) => e.type === 'reactive_action_submitted');
+    expect(submitted.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Reactive path over MCP (kept small on purpose): a 3-lap race with 4
+ * scripted agents as real MCP clients proves that reactive windows open,
+ * agents answer them via submit_reactive_action, the responses are logged,
+ * and the windows close — without paying for a 10-lap real-time race.
+ * The ">= 2 windows in 10 laps" acceptance lives in the sim-level test
+ * above.
+ */
+const TOTAL_LAPS = 3;
+
+let session;
+let server;
+let baseUrl;
+let logFile;
+let runPromise;
+let drivePromise;
+let agentSummaries = [];
+
 beforeAll(async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpgp-rw-'));
   logFile = path.join(tmpDir, 'race.jsonl');
 
   session = new RaceSession({
     totalLaps: TOTAL_LAPS,
-    strategyWindowSeconds: WINDOW_SECONDS,
-    reactiveWindowSeconds: WINDOW_SECONDS,
+    strategyWindowSeconds: WINDOW_BACKSTOP_S, // backstop only; windows close on submit
+    reactiveWindowSeconds: WINDOW_BACKSTOP_S,
     tickWallDelayMs: 0,
     seed: 77,
     logFile,
@@ -93,6 +154,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}/mcp`;
 
   runPromise = session.run();
+  drivePromise = driveWindows(session);
 
   agentSummaries = await Promise.all(
     AGENTS.map(async (a) =>
@@ -102,19 +164,20 @@ beforeAll(async () => {
         decide: SCRIPTED_AGENTS[a.profile].decide,
         decideReactive: SCRIPTED_AGENTS[a.profile].decideReactive,
         rng: createRng(a.seed),
-        pollMs: 80,
+        pollMs: 50,
       }),
     ),
   );
+  await drivePromise;
   await runPromise;
-}, 180000);
+}, 30000);
 
 afterAll(async () => {
   session.close();
-  await new Promise((resolve) => server.close(resolve));
+  await closeServer(server);
 });
 
-describe('10-lap race with reactive windows (MCPG-15 acceptance)', () => {
+describe('3-lap race with reactive windows over MCP', () => {
   it('finishes cleanly with all four cars', () => {
     const state = session.state();
     expect(state.phase).toBe('finished');
@@ -126,7 +189,7 @@ describe('10-lap race with reactive windows (MCPG-15 acceptance)', () => {
     }
   });
 
-  it('opens at least 2 reactive windows and logs every decision', () => {
+  it('opens reactive windows and logs a response for every affected car', () => {
     const lines = fs
       .readFileSync(logFile, 'utf8')
       .trim()
@@ -135,32 +198,28 @@ describe('10-lap race with reactive windows (MCPG-15 acceptance)', () => {
 
     const opened = lines.filter((l) => l.type === 'reactive_window_opened');
     const closed = lines.filter((l) => l.type === 'reactive_window_closed');
-    expect(opened.length, 'expected ≥2 reactive windows in a 10-lap race').toBeGreaterThanOrEqual(2);
+    expect(opened.length, 'expected reactive windows in a 3-lap race').toBeGreaterThan(0);
     expect(closed.length).toBe(opened.length);
 
-    // Every opened window has a logged response path (submitted and/or defaulted).
     for (const w of opened) {
       const responses = lines.filter(
         (l) =>
           (l.type === 'reactive_action_submitted' || l.type === 'reactive_action_defaulted') &&
           l.windowId === w.windowId,
       );
-      expect(responses.length, `window ${w.windowId} has no logged actions`).toBeGreaterThanOrEqual(1);
-      expect(responses.length).toBe(w.carIds.length);
-    }
-
-    // Triggers are from the MVP set.
-    for (const w of opened) {
+      expect(responses.length, `window ${w.windowId} has no logged actions`).toBe(w.carIds.length);
       expect(['close_battle', 'critical_tire_wear', 'pit_opportunity']).toContain(w.trigger);
     }
   });
 
-  it('scripted agents participated (strategy + reactive when affected)', () => {
+  it('scripted agents submitted strategies and answered reactive windows over MCP', () => {
     expect(agentSummaries).toHaveLength(4);
     for (const s of agentSummaries) {
-      expect(s.submissions).toBeGreaterThan(0);
+      // Windows close on submit: one strategy submission per lap (allow one
+      // defaulted lap for a pathological MCP stall, i.e. the backstop).
+      expect(s.submissions).toBeGreaterThanOrEqual(TOTAL_LAPS - 1);
     }
-    // At least one agent should have answered a reactive window over MCP.
+    // At least one agent answered a reactive window over MCP.
     const anyReactive = agentSummaries.some((s) => s.reactiveSubmissions > 0);
     expect(anyReactive).toBe(true);
   });

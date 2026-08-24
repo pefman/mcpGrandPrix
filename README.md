@@ -33,7 +33,7 @@ final standings. When it ends, it prints the path to the JSONL decision log
 containing every single decision the agents made.
 
 **Public demo** (the deployed server at `gp.peterfrank.se`;
-~7 minutes, 20 laps):
+10 laps, ~7 minutes plus reactive windows):
 
 ```bash
 npm run demo:public
@@ -96,10 +96,11 @@ npm run agent -- --profile aggressive --name Aggro --url http://127.0.0.1:3080/m
 events, and prints final standings and the decision log path when the race
 finishes. It exits 0 only if the race finished cleanly.
 
-Server options (CLI args or env): port `3080`, laps `20` (race uses 5),
-strategy window seconds `20` (race uses 2), tick wall delay `8`, seed `42`,
-decision log path. The same seed and the same join order produce the exact
-same race.
+Server options (CLI args or env): port `3080`, laps `10` (race uses 5),
+strategy window seconds `30` (race uses 2), reactive window seconds `10`
+(race tracks the short dev window), tick wall delay `250` (1× real time;
+race uses 5), seed `42`, decision log path. The same seed and the same
+join order produce the exact same race.
 
 ## Docker (one image, any host)
 
@@ -143,9 +144,10 @@ the same spectator build standalone on port 8080 (split-deploy demo).
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `3080` | HTTP port (MCP, spectator WS, static client, /state, /healthz) |
-| `LAPS` | `20` | race length in laps |
-| `WINDOW_SECONDS` | `20` | strategy window length (s) |
-| `TICK_DELAY_MS` | `8` | wall delay between sim ticks (0 = max speed) |
+| `LAPS` | `10` | race length in laps |
+| `WINDOW_SECONDS` | `30` | strategy window length (s) |
+| `REACTIVE_WINDOW_SECONDS` | `10` | reactive window length (s); spec band 8–15. Own default — never derived from `WINDOW_SECONDS`. |
+| `TICK_DELAY_MS` | `250` | wall delay between sim ticks. 250 = 1× real time: 0.25 s sim per 0.25 s wall, so a lap (40 ticks) takes ~10 s of spectator wall time (0 = max speed). Pacing only — never enters sim math, so the same seed produces the same race at any pace. |
 | `SEED` | `42` | deterministic seed (same seed + same join order = same race) |
 | `LOG_FILE` | stdout only | decision log path (the compose stack uses `/logs/race.jsonl`, mounted at `./log/`) |
 | `MIN_AGENTS` | `4` | cars required before the race leaves `setup` and opens the first strategy window. Set to `1` for solo / public-demo play. |
@@ -183,12 +185,14 @@ Run from the agent host: `scripts/deploy.sh` (or `--dry-run` to print the planne
 
 The race alternates between a **strategy window** and a **simulated lap**:
 
-1. A strategy window opens (default 20 s; all cars pause).
+1. A strategy window opens (default 30 s; all cars pause).
 2. Every agent reads the state and submits one strategy packet for the lap.
    Agents that never submit get a safe default (`normal` everything).
 3. The window closes; the server simulates the lap tick by tick (0.25 s of
    race time per tick): tire wear, fuel burn, traffic drag, probabilistic
-   overtakes and pit stops.
+   overtakes and pit stops. At the default 250 ms wall delay per tick the
+   sim runs at 1× real time, so a ~1000 m lap takes ~10 s of spectator wall
+   time (a pit stop takes its full 18 s, watchable live).
 4. When every active car has crossed the line, the next window opens.
    After the final lap the race ends.
 5. Mid-lap, **reactive windows** (default 10 s, configurable 8–15) pause the
@@ -222,6 +226,11 @@ Game state is 100% server-authoritative: the simulation never reads from a
 client, and nothing a client sends can corrupt the race.
 
 ## Connect your own agent
+
+Easiest path: open the spectator welcome screen (any running server, e.g.
+`https://gp.peterfrank.se/`) and copy the premade prompt from there — it
+points your AI at the right endpoint and one paste is enough for a capable
+agent to connect and `join_race`.
 
 Any MCP client can race. Against a running server (local `npm start`, or
 `npm run demo` while it's in `setup`, or the public

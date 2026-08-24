@@ -19,10 +19,14 @@ services:
       PORT: "3080"
       # Game tuning uses ${VAR:-dev-default} so the VPS deploy (scripts/deploy.sh)
       # can feed /opt/mcgp/.env via `docker compose --env-file` (production:
-      # LAPS=20, WINDOW_SECONDS=20, TICK_DELAY_MS=8). Local dev with no env file
-      # keeps the short dev defaults below.
+      # LAPS=10, WINDOW_SECONDS=30, REACTIVE_WINDOW_SECONDS=10, TICK_DELAY_MS=250
+      # — 1x real time, ~10 s wall per lap). Local dev with no env file keeps
+      # the short dev defaults below.
       LAPS: ${LAPS:-5}
       WINDOW_SECONDS: ${WINDOW_SECONDS:-2}
+      # Dev reactive pauses track the short dev window (2 s); production sets
+      # this explicitly to 10.
+      REACTIVE_WINDOW_SECONDS: ${REACTIVE_WINDOW_SECONDS:-2}
       TICK_DELAY_MS: ${TICK_DELAY_MS:-5}
       SEED: ${SEED:-42}
       LOG_FILE: /logs/race.jsonl

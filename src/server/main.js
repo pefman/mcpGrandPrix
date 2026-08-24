@@ -31,9 +31,9 @@ const [
   ,
   ,
   portArg = process.env.PORT ?? '3080',
-  lapsArg = process.env.LAPS ?? '20',
-  windowArg = process.env.WINDOW_SECONDS ?? '20',
-  delayArg = process.env.TICK_DELAY_MS ?? '8',
+  lapsArg = process.env.LAPS ?? '10',
+  windowArg = process.env.WINDOW_SECONDS ?? '30',
+  delayArg = process.env.TICK_DELAY_MS ?? '250', // 1x real time: ~10 s wall per lap
   seedArg = process.env.SEED ?? '42',
   logArg = process.env.LOG_FILE ?? '',
 ] = process.argv;
@@ -45,7 +45,10 @@ const track = createTrackFromEnv();
 const session = new RaceSession({
   totalLaps: Number(lapsArg),
   strategyWindowSeconds: Number(windowArg),
-  reactiveWindowSeconds: Number(process.env.REACTIVE_WINDOW_SECONDS ?? windowArg),
+  // Own default (10 s, in the 8-15 s spec band) — deliberately NOT derived
+  // from WINDOW_SECONDS, so a 30 s strategy window cannot silently stretch
+  // reactive windows with it.
+  reactiveWindowSeconds: Number(process.env.REACTIVE_WINDOW_SECONDS ?? '10'),
   tickWallDelayMs: Number(delayArg),
   seed: Number(seedArg),
   track,

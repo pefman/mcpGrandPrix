@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMcpHttpServer } from '../src/server/http.js';
 import { RaceSession } from '../src/server/raceSession.js';
+import { closeServer } from './helpers.js';
 
 /**
  * Slice 2: the game server serves the spectator client's static files
@@ -29,7 +30,7 @@ beforeAll(async () => {
 }, 30000);
 
 afterAll(async () => {
-  await new Promise((resolve) => server.close(resolve));
+  await closeServer(server);
 });
 
 describe('static serving of the spectator client', () => {
@@ -39,6 +40,22 @@ describe('static serving of the spectator client', () => {
     expect(res.headers.get('content-type')).toContain('text/html');
     expect(res.body).toContain('MCP Grand Prix');
     expect(res.body).toContain('importmap');
+    // welcome screen carries the copy-paste harness prompt (MCPG-36)
+    expect(res.body).toContain('id="harness-prompt"');
+    expect(res.body).toContain('id="copy-harness-prompt"');
+    expect(res.body).toContain('Paste this into your AI to get racing');
+  });
+
+  it('serves the welcome-screen harness prompt module', async () => {
+    const res = await get('/js/harnessPrompt.js');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('javascript');
+    // versioned constant + placeholders filled per-instance (never hardcoded URLs)
+    expect(res.body).toContain('HARNESS_PROMPT_REVISION');
+    expect(res.body).toContain('{mcp_url}');
+    expect(res.body).toContain('{spectate_url}');
+    expect(res.body).toContain('join_race');
+    expect(res.body).not.toContain('gp.peterfrank.se');
   });
 
   it('serves JS and CSS with the right content types', async () => {

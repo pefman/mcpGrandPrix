@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStaticServer } from '../src/server/staticServe.js';
+import { closeServer } from './helpers.js';
 
 /**
  * Split-deploy static server: the same client build can be served by a
@@ -20,7 +21,7 @@ beforeAll(async () => {
 }, 30000);
 
 afterAll(async () => {
-  await new Promise((resolve) => server.close(resolve));
+  await closeServer(server);
 });
 
 describe('createStaticServer (split deployment)', () => {

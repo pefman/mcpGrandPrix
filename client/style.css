@@ -174,6 +174,37 @@ html, body {
   backdrop-filter: blur(8px);
   max-width: 560px;
 }
+/* welcome screen: prompt block is interactive inside the pointer-events:none overlay */
+#overlay-start .overlay-card { pointer-events: auto; }
+.harness-prompt-label { margin-top: 18px; font-size: 14px; font-weight: 600; }
+#harness-prompt {
+  margin-top: 8px;
+  padding: 12px 14px;
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+#copy-harness-prompt {
+  margin-top: 10px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+#copy-harness-prompt:hover { filter: brightness(1.15); }
 .overlay-title {
   font-size: 30px;
   font-weight: 800;

@@ -44,7 +44,14 @@ function startServer() {
       String(seed),
       logFile,
     ],
-    { stdio: ['ignore', 'pipe', 'inherit'], cwd: root },
+    {
+      stdio: ['ignore', 'pipe', 'inherit'],
+      cwd: root,
+      // Keep the dev race fast: reactive pauses track the short dev window
+      // instead of the 10 s production default (a dev race opens a dozen or
+      // so reactive windows — 10 s each would add ~2 minutes).
+      env: { ...process.env, REACTIVE_WINDOW_SECONDS: String(windowSeconds) },
+    },
   );
   children.push(server);
   return server;
