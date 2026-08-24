@@ -1,14 +1,16 @@
 /**
  * Agent base: connects an MCP client to the race server and drives one car
  * through the hybrid loop. The "brain" is any `decide(view, rng) -> strategy`
- * function (see src/sim/strategies.js for the four scripted profiles).
+ * function (see src/sim/strategies.js for the four scripted profiles), plus an
+ * optional `decideReactive(view, window, rng) -> action` for Slice 3 windows.
  *
  * The agent:
  *   1. joins the race (idempotent by name),
  *   2. polls get_race_state,
  *   3. at the start of each lap's strategy window, computes and submits a
  *      strategy packet (once per lap; retries only on unexpected errors),
- *   4. exits cleanly when the race is finished.
+ *   4. when a reactive window lists this car, submits one reactive action,
+ *   5. exits cleanly when the race is finished.
  */
 import fs from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -21,13 +23,23 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param {string} opts.name        display name (join key)
  * @param {string} opts.serverUrl   e.g. http://127.0.0.1:3080/mcp
  * @param {(view: object, rng: object) => object} opts.decide
+ * @param {(view: object, window: object, rng: object) => object} [opts.decideReactive]
  * @param {object} [opts.rng]       seeded RNG for stochastic profiles
  * @param {number} [opts.pollMs]    polling interval (default 150)
  * @param {(line: object) => void} [opts.onLog]  receives agent log lines
  * @param {string} [opts.logFile]   JSONL file agent lines are also appended to
- * @returns {Promise<{carId: number, submissions: number, name: string}>}
+ * @returns {Promise<{carId: number, submissions: number, reactiveSubmissions: number, name: string}>}
  */
-export async function runAgent({ name, serverUrl, decide, rng, pollMs = 150, onLog = () => {}, logFile = null }) {
+export async function runAgent({
+  name,
+  serverUrl,
+  decide,
+  decideReactive = null,
+  rng,
+  pollMs = 150,
+  onLog = () => {},
+  logFile = null,
+}) {
   const emit = (line) => {
     onLog(line);
     if (logFile) {
@@ -41,6 +53,7 @@ export async function runAgent({ name, serverUrl, decide, rng, pollMs = 150, onL
   const client = new Client({ name, version: '0.1.0' });
   const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
   let submissions = 0;
+  let reactiveSubmissions = 0;
   let carId = null;
 
   try {
@@ -52,6 +65,7 @@ export async function runAgent({ name, serverUrl, decide, rng, pollMs = 150, onL
     emit({ type: 'agent_joined', name, carId });
 
     let lastLapSubmitted = null;
+    let lastReactiveWindowId = null;
     while (true) {
       let state;
       try {
@@ -76,6 +90,47 @@ export async function runAgent({ name, serverUrl, decide, rng, pollMs = 150, onL
           }
         }
       }
+
+      if (
+        state.phase === 'reactive_window' &&
+        state.reactiveWindow &&
+        state.reactiveWindow.id !== lastReactiveWindowId &&
+        state.reactiveWindow.carIds?.includes(carId)
+      ) {
+        const view = buildView(state, carId);
+        if (view) {
+          const action = decideReactive
+            ? decideReactive(view, state.reactiveWindow, rng)
+            : { type: 'hold' };
+          const res = await callTool(client, 'submit_reactive_action', {
+            carId,
+            type: action.type,
+            detail: action.detail,
+          });
+          if (res.accepted) {
+            reactiveSubmissions += 1;
+            lastReactiveWindowId = state.reactiveWindow.id;
+            emit({
+              type: 'agent_reactive',
+              name,
+              windowId: state.reactiveWindow.id,
+              trigger: state.reactiveWindow.trigger,
+              action,
+            });
+          } else if (res.error !== 'duplicate_action') {
+            // Window may have closed between poll and submit — move on.
+            lastReactiveWindowId = state.reactiveWindow.id;
+            emit({
+              type: 'agent_reactive_rejected',
+              name,
+              error: res.error,
+              details: res.details,
+            });
+          } else {
+            lastReactiveWindowId = state.reactiveWindow.id;
+          }
+        }
+      }
       await sleep(pollMs);
     }
   } finally {
@@ -86,7 +141,7 @@ export async function runAgent({ name, serverUrl, decide, rng, pollMs = 150, onL
     }
   }
 
-  return { name, carId, submissions };
+  return { name, carId, submissions, reactiveSubmissions };
 }
 
 /** MCP callTool wrapper: parses the JSON text result, tolerates tool-level errors. */

@@ -24,6 +24,7 @@ beforeAll(async () => {
   session = new RaceSession({
     totalLaps: 2,
     strategyWindowSeconds: 30, // long window; tests close it manually
+    reactiveWindowSeconds: 30,
     tickWallDelayMs: 0,
     seed: 11,
     logToStdout: false,
@@ -108,14 +109,13 @@ describe('MCP tools over Streamable HTTP', () => {
     expect(car.submittedStrategy).toBe(true);
   });
 
-  it('submit_reactive_action is a clean no-op stub in Slice 1', async () => {
+  it('submit_reactive_action rejects cleanly when no window is open', async () => {
     const res = await call(clients[3], 'submit_reactive_action', {
       carId: carD.carId,
       type: 'attack',
-      detail: 'testing the stub',
+      detail: 'no window yet',
     });
-    expect(res).toEqual({ accepted: false, error: 'reactive_windows_not_yet_available' });
-    // calling it twice changes nothing
+    expect(res).toEqual({ accepted: false, error: 'no_reactive_window' });
     const again = await call(clients[3], 'submit_reactive_action', { carId: carD.carId, type: 'attack' });
     expect(again).toEqual(res);
   });
@@ -125,7 +125,9 @@ describe('MCP tools over Streamable HTTP', () => {
 
     let guard = 0;
     while (session.state().phase !== 'finished' && guard < 5000) {
-      if (session.state().phase === 'strategy_window') session.closeWindow();
+      const phase = session.state().phase;
+      if (phase === 'strategy_window') session.closeWindow();
+      else if (phase === 'reactive_window') session.closeReactiveWindow();
       else session.tickOnce();
       guard += 1;
     }

@@ -148,11 +148,16 @@ The race alternates between a **strategy window** and a **simulated lap**:
    overtakes and pit stops.
 4. When every active car has crossed the line, the next window opens.
    After the final lap the race ends.
+5. Mid-lap, **reactive windows** (default 10 s, configurable 8–15) pause the
+   sim for affected cars only when a trigger fires:
+   - `close_battle` — overtake attempt within a tight gap (attacker/defender)
+   - `critical_tire_wear` — wear crosses the critical threshold (once per stint)
+   - `pit_opportunity` — strategy-driven elevated-wear pit offer (once per lap)
 
-Reactive windows (short 8–15 s windows opened only for affected cars on
-trigger events: close battles, weather, safety car, critical tire wear, pit
-opportunities) arrive in Slice 3; the tool for them already exists as an
-idempotent no-op.
+   Affected agents submit one action via `submit_reactive_action`
+   (`attack` / `defend` / `hold` / `pit_now` depending on trigger+role), or do
+   nothing (timeout = hold). The outcome feeds the sim (pass/fail, pit flag),
+   then ticks resume. Weather / safety-car triggers are deferred.
 
 ## MCP tools
 
@@ -168,7 +173,7 @@ field, never transport-level failures.
 | `get_car_state` | Snapshot of one car plus its standing. | Pure read. |
 | `get_standings` | Position, name, status, laps, gap to leader. | Pure read. |
 | `submit_phase_strategy` | Strategy packet for the current window: `pace`, `tireManagement` (`push\|normal\|manage`), `aggression`, `defend` (`0\|1`), `pitNow` (`bool`). Omitted fields default. | First valid packet per window wins; repeats rejected as `duplicate_strategy`, never change state. |
-| `submit_reactive_action` | React to a reactive window (Slice 3). | Always rejected with `reactive_windows_not_yet_available` in Slice 1 — a safe no-op, so retries are free. |
+| `submit_reactive_action` | React to an open reactive window (`attack`/`defend`/`hold`/`pit_now`). See `get_race_state().reactiveWindow` for trigger, `carIds`, and `allowedByCar`. | First valid action per `(carId, windowId)` wins; duplicates → `duplicate_action`; wrong car / no window → error, no state change. |
 
 Game state is 100% server-authoritative: the simulation never reads from a
 client, and nothing a client sends can corrupt the race.
@@ -294,6 +299,6 @@ window closes) and run in ~10 s.
 
 - **Slice 1 (done)** — core sim, MCP tools, scripted agents, logging, tests.
 - **Slice 2 (done)** — Three.js spectator client over WebSocket.
-- **Slice 3** — reactive windows + first Vercel deploy.
+- **Slice 3** — reactive windows + event triggers (this slice); VPS deploy is separate.
 - **Slice 4** — Playwright e2e suite (smoke race as the gate).
 - **Slice 5** — demo + polish.

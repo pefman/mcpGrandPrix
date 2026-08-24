@@ -148,7 +148,7 @@ server.stdout.on('data', (chunk) => {
         killAll(1);
       } else {
         // pass through selected events so the race is visible
-        if (['race_start', 'window_opened', 'window_closed', 'strategy_submitted', 'strategy_defaulted', 'pit_stop_enter', 'pit_stop_complete', 'overtake', 'finish', 'retired', 'spectator_connected', 'spectator_disconnected'].includes(ev.type)) {
+        if (['race_start', 'window_opened', 'window_closed', 'strategy_submitted', 'strategy_defaulted', 'reactive_window_opened', 'reactive_action_submitted', 'reactive_action_defaulted', 'reactive_window_closed', 'pit_stop_enter', 'pit_stop_complete', 'overtake', 'overtake_failed', 'finish', 'retired', 'spectator_connected', 'spectator_disconnected'].includes(ev.type)) {
           console.log(line);
         }
       }

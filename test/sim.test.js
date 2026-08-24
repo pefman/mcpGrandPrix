@@ -10,6 +10,8 @@ const runUntilFinished = (sim, maxTicks = 100000) => {
   while (sim.phase !== 'finished' && guard < maxTicks) {
     if (sim.phase === 'strategy_window') {
       sim.closeWindow(); // tests never let a window time out; close immediately
+    } else if (sim.phase === 'reactive_window') {
+      sim.closeReactiveWindow();
     } else {
       sim.tick();
       ticks += 1;
@@ -24,6 +26,7 @@ const makeSim = (opts = {}) =>
   new Simulation({
     totalLaps: 5,
     strategyWindowSeconds: 0,
+    reactiveWindowSeconds: 0,
     seed: 7,
     ...opts,
   });
@@ -242,6 +245,8 @@ describe('Simulation: race mechanics', () => {
         sim.submitPhaseStrategy(sim.cars[0].id, p1packet);
         sim.submitPhaseStrategy(sim.cars[1].id, { pace: 'push' });
         sim.closeWindow();
+      } else if (sim.phase === 'reactive_window') {
+        sim.closeReactiveWindow();
       } else {
         sim.tick();
       }
@@ -273,11 +278,13 @@ describe('Simulation: race mechanics', () => {
     sim.start();
     // force every lap through a window with all-normal strategies (normal fuel burn)
     let guard = 0;
-    while (sim.phase !== 'finished' && guard < 5000) {
+    while (sim.phase !== 'finished' && guard < 50000) {
       if (sim.phase === 'strategy_window') {
         for (const car of sim.cars) sim.submitPhaseStrategy(car.id, { pace: 'normal' });
         sim.forceCloseWindow();
         sim.closeWindow();
+      } else if (sim.phase === 'reactive_window') {
+        sim.closeReactiveWindow();
       } else if (sim.phase === 'simulation') {
         sim.tick();
       }
@@ -333,14 +340,159 @@ describe('Simulation: race mechanics', () => {
   });
 });
 
-describe('Simulation: reactive window stub', () => {
-  it('rejects reactive actions without side effects', () => {
+describe('Simulation: reactive windows', () => {
+  it('rejects reactive actions when no window is open', () => {
     const sim = makeSim();
     addFour(sim);
     sim.start();
-    const r = sim.submitReactiveAction(sim.cars[0].id, { type: 'attack' });
-    expect(r).toEqual({ accepted: false, error: 'reactive_windows_not_yet_available' });
+    expect(sim.submitReactiveAction(sim.cars[0].id, { type: 'attack' })).toEqual({
+      accepted: false,
+      error: 'no_reactive_window',
+    });
     expect(sim.submitReactiveAction(999, { type: 'attack' })).toEqual({ accepted: false, error: 'unknown_car' });
+  });
+
+  it('opens a close_battle window and resolves a successful attack/defend exchange', () => {
+    const events = [];
+    const sim = makeSim({ seed: 1, onEvent: (e) => events.push(e) });
+    addFour(sim);
+    sim.start();
+    // Pack the field and make car 2 (B) much faster than car 1 (A) so a battle fires.
+    const [a, b] = sim.cars;
+    for (const c of sim.cars) {
+      c.distTraveled = 100;
+      c.completedLaps = 0;
+      c.position = 100;
+    }
+    a.distTraveled = 120;
+    a.position = 120;
+    b.distTraveled = 100;
+    b.position = 100;
+    sim.submitPhaseStrategy(a.id, { pace: 'manage', defend: 1 });
+    sim.submitPhaseStrategy(b.id, { pace: 'push', aggression: 1 });
+    sim.forceCloseWindow();
+    sim.closeWindow();
+
+    let opened = null;
+    for (let i = 0; i < 200 && sim.phase === 'simulation'; i++) {
+      sim.tick();
+      if (sim.phase === 'reactive_window') {
+        opened = sim.reactiveWindow;
+        break;
+      }
+    }
+    expect(opened, 'expected a close_battle reactive window').toBeTruthy();
+    expect(opened.trigger).toBe('close_battle');
+    expect(opened.carIds).toEqual(expect.arrayContaining([a.id, b.id]));
+
+    const state = sim.state();
+    expect(state.phase).toBe('reactive_window');
+    expect(state.reactiveWindow.trigger).toBe('close_battle');
+
+    const atk = sim.submitReactiveAction(b.id, { type: 'attack' });
+    expect(atk.accepted).toBe(true);
+    const dup = sim.submitReactiveAction(b.id, { type: 'hold' });
+    expect(dup).toEqual({
+      accepted: false,
+      error: 'duplicate_action',
+      details: ['action for this window was already submitted'],
+    });
+    expect(sim.submitReactiveAction(a.id, { type: 'defend' }).accepted).toBe(true);
+    // Unaffected car rejected
+    expect(sim.submitReactiveAction(sim.cars[2].id, { type: 'hold' })).toEqual({
+      accepted: false,
+      error: 'car_not_in_window',
+    });
+
+    const outcome = sim.closeReactiveWindow();
+    expect(outcome.type).toBe('close_battle');
+    expect(sim.phase).toBe('simulation');
+    expect(events.some((e) => e.type === 'reactive_window_opened')).toBe(true);
+    expect(events.some((e) => e.type === 'reactive_action_submitted')).toBe(true);
+    expect(events.some((e) => e.type === 'reactive_window_closed')).toBe(true);
+  });
+
+  it('defaults missing reactive actions to hold on timeout', () => {
+    const events = [];
+    const sim = makeSim({ onEvent: (e) => events.push(e) });
+    addFour(sim);
+    sim.start();
+    // Space cars so close_battle cannot steal priority over the tire trigger.
+    sim.cars.forEach((c, i) => {
+      c.distTraveled = 50 + i * 200;
+      c.position = 50 + i * 200;
+      c.tireWear = 85;
+    });
+    sim.forceCloseWindow();
+    sim.closeWindow();
+
+    let guard = 0;
+    while (sim.phase === 'simulation' && guard++ < 50) sim.tick();
+    expect(sim.phase).toBe('reactive_window');
+    expect(sim.reactiveWindow.trigger).toBe('critical_tire_wear');
+
+    // No submissions — timeout path
+    sim.forceCloseReactiveWindow();
+    expect(sim.reactiveWindowRemainingS()).toBe(0);
+    const outcome = sim.closeReactiveWindow();
+    expect(outcome.type).toBe('critical_tire_wear');
+    expect(outcome.pitRequestedCarIds).toEqual([]);
+    expect(events.some((e) => e.type === 'reactive_action_defaulted')).toBe(true);
+  });
+
+  it('critical_tire_wear pit_now queues a pit stop', () => {
+    const sim = makeSim();
+    addFour(sim);
+    sim.start();
+    const car = sim.cars[0];
+    sim.cars.forEach((c, i) => {
+      c.distTraveled = 50 + i * 200;
+      c.position = 50 + i * 200;
+    });
+    car.tireWear = 90;
+    sim.forceCloseWindow();
+    sim.closeWindow();
+
+    let guard = 0;
+    while (sim.phase === 'simulation' && guard++ < 50) sim.tick();
+    expect(sim.phase).toBe('reactive_window');
+    expect(sim.reactiveWindow.trigger).toBe('critical_tire_wear');
+
+    expect(sim.submitReactiveAction(car.id, { type: 'pit_now' }).accepted).toBe(true);
+    const outcome = sim.closeReactiveWindow();
+    expect(outcome.pitRequestedCarIds).toContain(car.id);
+    expect(car.pitRequested).toBe(true);
+  });
+
+  it('pit_opportunity fires once per lap for elevated wear', () => {
+    const sim = makeSim();
+    addFour(sim);
+    sim.start();
+    const car = sim.cars[0];
+    sim.cars.forEach((c, i) => {
+      c.distTraveled = 50 + i * 200;
+      c.position = 50 + i * 200;
+    });
+    // Between pitOpportunity and critical thresholds
+    car.tireWear = 60;
+    sim.forceCloseWindow();
+    sim.closeWindow();
+
+    let guard = 0;
+    while (sim.phase === 'simulation' && guard++ < 50) sim.tick();
+    expect(sim.phase).toBe('reactive_window');
+    expect(sim.reactiveWindow.trigger).toBe('pit_opportunity');
+    expect(sim.reactiveWindow.carIds).toContain(car.id);
+    sim.closeReactiveWindow();
+
+    // Same lap: should not re-fire pit_opportunity for the same car
+    for (let i = 0; i < 20 && sim.phase === 'simulation'; i++) sim.tick();
+    if (sim.phase === 'reactive_window') {
+      expect(sim.reactiveWindow.trigger === 'pit_opportunity' && sim.reactiveWindow.carIds.includes(car.id)).toBe(
+        false,
+      );
+      sim.closeReactiveWindow();
+    }
   });
 });
 

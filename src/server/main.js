@@ -3,8 +3,9 @@
  *
  *   node src/server/main.js [port] [totalLaps] [windowSeconds] [tickDelayMs] [seed] [logFile]
  *
- * Env overrides: PORT, LAPS, WINDOW_SECONDS, TICK_DELAY_MS, SEED, LOG_FILE,
- * MIN_AGENTS (cars required to leave setup; default 4 — use 1 for solo demo).
+ * Env overrides: PORT, LAPS, WINDOW_SECONDS, REACTIVE_WINDOW_SECONDS (defaults
+ * to WINDOW_SECONDS), TICK_DELAY_MS, SEED, LOG_FILE, MIN_AGENTS (cars required
+ * to leave setup; default 4 — use 1 for solo demo).
  * Prints one JSON object per line on stdout: server_ready, every logged
  * race event/decision, and race_complete with final standings.
  *
@@ -38,6 +39,7 @@ const [
 const session = new RaceSession({
   totalLaps: Number(lapsArg),
   strategyWindowSeconds: Number(windowArg),
+  reactiveWindowSeconds: Number(process.env.REACTIVE_WINDOW_SECONDS ?? windowArg),
   tickWallDelayMs: Number(delayArg),
   seed: Number(seedArg),
   logFile: logArg || null,

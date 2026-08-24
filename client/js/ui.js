@@ -107,11 +107,34 @@ export function createUi() {
       }
     },
 
-    /** strategy window banner; `windowRemainingS` drives the countdown. */
+    /**
+     * Strategy / reactive window banner. Strategy windows list every car;
+     * reactive windows list only the affected cars (from reactiveWindow.carIds).
+     */
     setStrategyBanner(snapshot) {
-      const open = snapshot.phase === 'strategy_window';
+      const strategyOpen = snapshot.phase === 'strategy_window';
+      const reactiveOpen = snapshot.phase === 'reactive_window' && snapshot.reactiveWindow;
+      const open = strategyOpen || reactiveOpen;
       banner.classList.toggle('hidden', !open);
       if (!open) return;
+
+      if (reactiveOpen) {
+        const rw = snapshot.reactiveWindow;
+        bannerLap.textContent = `— ${String(rw.trigger).replace(/_/g, ' ').toUpperCase()}`;
+        bannerCountdown.textContent = `${Math.ceil(rw.remainingS ?? 0)}s`;
+        bannerCars.textContent = '';
+        const submitted = new Set(rw.submittedCarIds ?? []);
+        for (const car of snapshot.cars) {
+          if (!rw.carIds.includes(car.id)) continue;
+          const chip = document.createElement('span');
+          const done = submitted.has(car.id);
+          chip.className = 'sw-car' + (done ? ' done' : '');
+          chip.textContent = done ? `${car.name} ✓` : car.name;
+          bannerCars.appendChild(chip);
+        }
+        return;
+      }
+
       bannerLap.textContent = snapshot.totalLaps ? `— LAP ${snapshot.currentLap}` : '';
       bannerCountdown.textContent = `${Math.ceil(snapshot.windowRemainingS ?? 0)}s`;
       bannerCars.textContent = '';
