@@ -5,10 +5,49 @@ A multiplayer Grand Prix tactics game where LLM agents race by submitting
 chooses pace, tire management, attack/defend and pit strategy every lap, and
 the server simulates the rest.
 
-This repository currently contains **Slice 1 + Slice 2** — the pure game
-server (race simulation, the MCP tool surface, scripted test agents, JSONL
-decision logging) plus a live **Three.js spectator client**: open a browser,
-watch the cars race in real time over a WebSocket feed.
+This repository contains the current MVP: the pure game server (race
+simulation, the MCP tool surface, scripted test agents, JSONL decision
+logging), mid-lap **reactive strategy windows**, a live **Three.js spectator
+client** (open a browser, watch the cars race in real time over a WebSocket
+feed), and a **live demo** you can run locally or against the public server.
+
+## Live demo (watch a full race, decisions and all)
+
+The demo is a race built to be watched by a human: four scripted agents make
+planned decisions in every strategy window *and* reactive decisions when the
+sim pauses the field for a trigger, while the terminal narrates every
+decision as it happens.
+
+**Local demo** (default; ~2.5 minutes, 5 laps, real-time windows):
+
+```bash
+npm install
+npm run demo
+```
+
+Then open the printed URL (usually **`http://127.0.0.1:3080/`**) and watch
+the 3D spectator view while the terminal narrates: each agent's strategy
+packet, every reactive window (close battle, critical tire wear, pit
+opportunity) and the action each car took, overtakes, pit stops, and the
+final standings. When it ends, it prints the path to the JSONL decision log
+containing every single decision the agents made.
+
+**Public demo** (the deployed server at `gp.peterfrank.se`;
+~7 minutes, 20 laps):
+
+```bash
+npm run demo:public
+```
+
+Waits for the server to be in its `setup` phase, joins the scripted agents,
+opens the race on **`https://gp.peterfrank.se/`** in a browser, and narrates
+decisions in the terminal (reconnects automatically if the server restarts
+between races). Note: the live deployment currently runs with
+`MIN_AGENTS=1`, so the race starts with as few cars as the server requires —
+set `MIN_AGENTS=4` in the VPS environment for a full four-car public race.
+
+Any MCP client can join a demo mid-setup the same way the scripted agents
+do — see *Connect your own agent* below.
 
 ## Quickstart (watch a race in the browser)
 
@@ -24,7 +63,7 @@ the race ends. Open as many tabs as you like; each tab is one spectator and
 the counter in the top-right keeps track. The same race also runs fully in
 containers — see *Docker* below.
 The server serves the client from the same origin, so no extra tooling is
-needed locally. For a split deployment (client on Vercel, game server on an
+needed locally. For a split deployment (client elsewhere, game server on an
 always-on host), deploy the `client/` folder as a static site and point it at
 the game server with `?server=http://host:port` (or `window.MGP_SERVER_URL`;
 see *Spectator client* below).
@@ -37,8 +76,9 @@ npm install
 # run the acceptance race: 5 laps, 4 scripted agents, headless
 npm run race
 
-# run the test suite (58 tests: sim, strategies, MCP over HTTP, spectator,
-# static serving, health endpoint, split-deploy static server, end-to-end)
+# run the test suite (80 tests: sim, strategies, reactive windows, MCP over
+# HTTP, spectator, static serving, health endpoint, split-deploy static
+# server, end-to-end, demo narration)
 npm test
 
 # start a bare race server (MCP endpoint on http://127.0.0.1:3080/mcp)
@@ -118,8 +158,10 @@ For bare local runs, the CLI args to `node src/server/main.js`
 
 Live demo (VPS): **`https://gp.peterfrank.se/mcp`** — MCP Streamable HTTP.
 Spectator: `https://gp.peterfrank.se/`. The race stays in `setup` until
-`MIN_AGENTS` cars have joined (demo deploy uses `MIN_AGENTS=1`). POSTs must
-send `Accept: application/json, text/event-stream`.
+`MIN_AGENTS` cars have joined (the demo deploy currently uses
+`MIN_AGENTS=1`, so one car leaves `setup`; `MIN_AGENTS=4` in the VPS env
+gives the full four-car demo via `npm run demo:public`). POSTs must send
+`Accept: application/json, text/event-stream`.
 
 ### Hosting notes (free tier)
 
@@ -128,8 +170,9 @@ race of a few minutes and exits 0 — a good fit for "scale to zero" platforms.
 Free tiers sleep idle instances, and the server has no *outbound* keep-alive
 (inbound spectator pings only, see *Spectator client*) — so a race with a
 connected spectator keeps the instance awake, while a race with nobody
-watching may be hibernated mid-race on a free tier. The first real host
-(Slice 3) should be chosen with that in mind; re-running after a cold start
+watching may be hibernated mid-race on a free tier. The current deployment
+is a VPS (always-on, see *VPS deploy*), where this is a non-issue; if the
+game ever moves to a scale-to-zero platform, re-running after a cold start
 is cheap because the seeded race is deterministic.
 
 ### VPS deploy (`scripts/deploy.sh`)
@@ -177,6 +220,37 @@ field, never transport-level failures.
 
 Game state is 100% server-authoritative: the simulation never reads from a
 client, and nothing a client sends can corrupt the race.
+
+## Connect your own agent
+
+Any MCP client can race. Against a running server (local `npm start`, or
+`npm run demo` while it's in `setup`, or the public
+`https://gp.peterfrank.se/mcp`):
+
+1. Connect over MCP Streamable HTTP. The endpoint speaks JSON-RPC over
+   `POST /mcp` and clients must send
+   `Accept: application/json, text/event-stream` (the standard MCP SDK
+   transport does this for you).
+2. `join_race { name: "YourDriver" }` — returns your `carId` and grid
+   position. Joining is only possible while the phase is `setup`; once
+   `MIN_AGENTS` cars are in, the race starts and joining closes.
+3. Loop:
+   - `get_race_state` while the phase is `strategy_window` → submit one
+     `submit_phase_strategy` per window (`pace`, `tireManagement`,
+     `aggression`, `defend`, `pitNow`). First valid packet per window wins.
+   - When `get_race_state().reactiveWindow` is non-null **and your `carId`
+     is in `reactiveWindow.carIds`**, submit one
+     `submit_reactive_action` from `reactiveWindow.allowedByCar[carId]`
+     before it closes. No action = `hold`.
+4. Read `get_standings` when the phase is `finished`.
+
+The four scripted agents in `agents/` (`aggressive`, `conservative`,
+`pitHeavy`, `random`) are working reference implementations of exactly this
+loop — run one standalone with:
+
+```bash
+npm run agent -- --profile aggressive --name MyAgent --url http://127.0.0.1:3080/mcp --seed 7
+```
 
 ## Spectator client (Slice 2)
 
@@ -246,28 +320,37 @@ src/
                          `client` service, Vercel)
 client/                  Three.js spectator client (index.html, js/, vendor/)
 agents/
-  agentBase.js           MCP client loop: join, poll, submit once per lap
+  agentBase.js           MCP client loop: join, poll, submit once per lap,
+                         react to reactive windows
   run.js                 standalone agent process (npm run agent)
 scripts/runRace.js       `npm run race` orchestrator (server + 4 agents)
 scripts/runAgents.js     agents-only orchestrator for the Docker stack
+scripts/demo.js          `npm run demo` / `demo:public` — watchable demo:
+                         local server + 4 agents with a live decision
+                         narrator, or the public server
+scripts/demoNarration.js pure event → narration text (unit-tested)
 Dockerfile               multi-stage, non-root image (server, agents, client)
 docker-compose.yml       local stack: server + scripted-agent race + client
-test/                    Vitest: sim, strategies, MCP over HTTP, end-to-end
+test/                    Vitest: sim, strategies, reactive, MCP over HTTP,
+                         spectator, static serving, end-to-end, demo
 log/                     decision logs (gitignored, .gitkeep keeps it for Docker)
 ```
 
 ## Decision log
 
-Every race writes one JSONL file (path printed at the end of `npm run race`),
-one line per event: `session_started`, `agent_joined`, `race_start`,
-`window_opened`, `strategy_submitted`, `strategy_defaulted`, `window_closed`,
-`lap_complete`, `overtake`, `pit_stop_enter`, `pit_stop_complete`, `finish`,
-`retired`, `race_finished`, `session_finished`, spectator traffic
+Every race writes one JSONL file (path printed at the end of `npm run race`
+and `npm run demo`), one line per event: `session_started`, `agent_joined`,
+`race_start`, `window_opened`, `strategy_submitted`, `strategy_defaulted`,
+`window_closed`, `reactive_window_opened`, `reactive_action_submitted`,
+`reactive_action_defaulted`, `reactive_window_closed`, `lap_complete`,
+`overtake`, `pit_stop_enter`, `pit_stop_complete`, `finish`, `retired`,
+`race_finished`, `session_finished`, spectator traffic
 (`spectator_connected`, `spectator_disconnected`, `spectator_final_broadcast`)
-— plus agent-side lines (`agent_decision`, `agent_strategy_rejected`) written
-by the agent processes.
-Strategy decisions and pit actions are the lines an analyst (or a human
-spectator in Slice 2) will care about.
+— plus agent-side lines (`agent_decision`, `agent_strategy_rejected`,
+`agent_reactive`, `agent_reactive_rejected`) written by the agent processes.
+Strategy decisions, reactive actions and pit calls are the lines an analyst
+(or a human spectator) will care about — `npm run demo` narrates exactly
+these lines live.
 
 ## Testing
 
@@ -277,6 +360,9 @@ spectator in Slice 2) will care about.
   determinism, and their pit logic.
 - `test/mcp.test.js` — real MCP clients over real HTTP: join idempotency,
   read tools, strategy first-wins, a full race driven through the tools.
+- `test/reactive.test.js` — reactive windows: each trigger fires with the
+  right cars and roles, only allowed actions are accepted, outcomes feed the
+  sim, and the race stays deterministic with windows enabled.
 - `test/race.test.js` — end-to-end: the server process with four in-process
   scripted agents, asserting the hybrid loop actually runs (one window per
   lap), everyone submits, pits happen, and the race finishes with sane gaps.
@@ -291,14 +377,18 @@ spectator in Slice 2) will care about.
   phase after an agent joins), path-traversal rejection, 404 for unknown paths.
 - `test/staticServe.test.js` — the standalone static server for split
   deployments (same files, same 404 shape).
+- `test/demo.test.js` — the demo narration: every narrated decision type
+  renders the right text, non-decision events stay quiet.
 
 All tests are deterministic (seeded RNG, `tickWallDelayMs: 0`, immediate
-window closes) and run in ~10 s.
+window closes) and run in ~30 s.
 
 ## Roadmap
 
 - **Slice 1 (done)** — core sim, MCP tools, scripted agents, logging, tests.
 - **Slice 2 (done)** — Three.js spectator client over WebSocket.
-- **Slice 3** — reactive windows + event triggers (this slice); VPS deploy is separate.
-- **Slice 4** — Playwright e2e suite (smoke race as the gate).
-- **Slice 5** — demo + polish.
+- **Slice 3 (done)** — reactive windows + event triggers, scripted agents
+  reacting, VPS deploy (`https://gp.peterfrank.se/`).
+- **Slice 4 (cancelled)** — Playwright e2e suite; the deterministic Vitest
+  suite (including the end-to-end race test) covers the same ground.
+- **Slice 5 (done)** — live demo (local + public) and this README.
