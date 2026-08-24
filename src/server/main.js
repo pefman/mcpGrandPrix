@@ -6,9 +6,17 @@
  * Env overrides: PORT, LAPS, WINDOW_SECONDS, TICK_DELAY_MS, SEED, LOG_FILE.
  * Prints one JSON object per line on stdout: server_ready, every logged
  * race event/decision, and race_complete with final standings.
+ *
+ * Also serves the Slice 2 spectator client (static files at /, live
+ * WebSocket feed at /spectate) so the race can be watched in a browser.
  */
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createMcpHttpServer } from './http.js';
 import { RaceSession } from './raceSession.js';
+import { createSpectatorHub, SPECTATE_PATH } from './spectator.js';
+
+const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client');
 
 const [
   ,
@@ -30,14 +38,31 @@ const session = new RaceSession({
   logToStdout: true,
 });
 
-const server = createMcpHttpServer(session);
+const server = createMcpHttpServer(session, { staticDir: clientDir });
+const spectator = createSpectatorHub(server, session, {
+  onEvent: (event) => session.logger.log(event), // spectator traffic in the decision log
+});
 server.listen(Number(portArg), () => {
-  console.log(JSON.stringify({ type: 'server_ready', port: Number(portArg) }));
+  console.log(JSON.stringify({
+    type: 'server_ready',
+    port: Number(portArg),
+    spectatorUrl: `http://127.0.0.1:${portArg}/`,
+    spectateWs: `ws://127.0.0.1:${portArg}${SPECTATE_PATH}`,
+  }));
   session
     .run()
-    .then(() => {
+    .then(async () => {
+      // Send the final snapshot to every spectator synchronously, BEFORE
+      // printing race_complete: the `npm run race` orchestrator SIGTERMs
+      // the server the moment it sees that line, so anything scheduled
+      // after it (timers, close handshakes) may never run. Frames written
+      // now are flushed to the sockets while the process is alive.
+      spectator.finalize();
       console.log(JSON.stringify({ type: 'race_complete', standings: session.standings() }));
+      // Extra margin so browsers receive the final frame before teardown.
+      await new Promise((resolve) => setTimeout(resolve, 400));
       session.close();
+      spectator.close();
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 2000).unref();
     })

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MCP Grand Prix — Live</title>
+  <link rel="stylesheet" href="./style.css" />
+  <script src="./config.js"></script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <!-- top-left: phase + lap + race clock -->
+  <div id="hud">
+    <div id="phase-chip" class="phase-setup">SETUP</div>
+    <div id="lap-line">LAP — / —</div>
+    <div id="clock-line">00:00.0</div>
+  </div>
+
+  <!-- top-right: connection + viewers -->
+  <div id="conn-box">
+    <span id="conn-dot" class="dot-off"></span>
+    <span id="conn-text">CONNECTING…</span>
+    <span id="viewers" class="muted"></span>
+  </div>
+
+  <!-- top-center: strategy window banner -->
+  <div id="strategy-banner" class="hidden">
+    <div id="strategy-title">STRATEGY WINDOW <span id="strategy-lap"></span></div>
+    <div id="strategy-countdown">—</div>
+    <div id="strategy-cars"></div>
+  </div>
+
+  <!-- right: leaderboard -->
+  <div id="leaderboard">
+    <div class="lb-head">
+      <span class="lb-pos">#</span><span class="lb-name">DRIVER</span><span class="lb-laps">LAP</span><span class="lb-gap">GAP</span>
+    </div>
+    <div id="lb-rows"></div>
+  </div>
+
+  <!-- center overlays -->
+  <div id="overlay-start" class="overlay">
+    <div class="overlay-card">
+      <div class="overlay-title">MCP GRAND PRIX</div>
+      <div class="overlay-sub" id="start-status">Waiting for agents to join…</div>
+      <div class="overlay-sub muted" id="start-joined"></div>
+    </div>
+  </div>
+
+  <div id="overlay-finished" class="overlay hidden">
+    <div class="overlay-card">
+      <div class="overlay-title">RACE COMPLETE</div>
+      <div id="final-standings"></div>
+      <div class="overlay-sub muted" id="finished-note">The server keeps running only until the last lap is scored.</div>
+    </div>
+  </div>
+
+  <!-- car name labels (projected every frame) -->
+  <div id="labels"></div>
+
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.js" } }
+  </script>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

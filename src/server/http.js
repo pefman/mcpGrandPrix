@@ -6,11 +6,22 @@
  *   POST   /mcp   JSON-RPC messages (initialize starts a new session)
  *   GET    /mcp   SSE stream for server->client messages (session id required)
  *   DELETE /mcp   session termination (session id required)
+ *   GET    /state current race state as JSON (spectator fallback, see below)
+ *
+ * Non-MCP GETs may serve static files (`staticDir` option) — used for the
+ * spectator client (Slice 2). The spectator WebSocket (`/spectate`, see
+ * spectator.js) attaches to this server via its 'upgrade' event.
+ *
+ * `GET /state` returns the current race state as JSON. The spectator client
+ * uses it as a fallback when its WebSocket closes before it has seen the
+ * final (finished) snapshot — e.g. when the server process exits right
+ * after the race and the last frame is lost in the shutdown race.
  */
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpServer } from './mcpServer.js';
+import { tryServeStatic } from './staticFiles.js';
 
 const readBody = (req) =>
   new Promise((resolve, reject) => {
@@ -28,12 +39,24 @@ const readBody = (req) =>
     req.on('error', reject);
   });
 
-export function createMcpHttpServer(session, { path = '/mcp' } = {}) {
+export function createMcpHttpServer(session, { path = '/mcp', staticDir = null } = {}) {
   const transports = new Map(); // sessionId -> transport
 
   const server = http.createServer(async (req, res) => {
     try {
-      if (req.url !== path) {
+      const urlPath = req.url.split('?')[0].split('#')[0];
+      if (urlPath !== path) {
+        if (urlPath === '/state' && req.method === 'GET') {
+          const state = session.state();
+          state.finished = state.phase === 'finished';
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+          });
+          res.end(JSON.stringify(state));
+          return;
+        }
+        if (staticDir && tryServeStatic(req, res, staticDir)) return;
         res.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not found' }));
         return;
       }
