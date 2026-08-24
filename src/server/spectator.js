@@ -39,7 +39,27 @@ export function buildSnapshotMessage(session, spectatorCount) {
     ...state,
     serverNowMs: Date.now(),
     finished: state.phase === 'finished',
+    pending: state.pending ?? [],
     spectators: spectatorCount,
+  });
+}
+
+/**
+ * Connect/rotation greeting. `raceId` (MCPG-34) lets a persistent server's
+ * clients notice when a NEW race session replaces the old one: a different
+ * raceId after having seen `finished` means reset the scene and overlays.
+ * Bare sessions (no orchestrator) report null, so old clients ignore it.
+ */
+export function buildHelloMessage(session) {
+  const state = session.state();
+  return JSON.stringify({
+    type: 'hello',
+    protocol: 1,
+    raceId: session.raceId ?? null,
+    serverNowMs: Date.now(),
+    track: state.track,
+    totalLaps: state.totalLaps,
+    phase: state.phase,
   });
 }
 
@@ -100,14 +120,7 @@ export function createSpectatorHub(httpServer, session, {
 
     // hello + immediate full snapshot: covers reconnects (snapshots are
     // self-contained, so no replay history is needed).
-    ws.send(JSON.stringify({
-      type: 'hello',
-      protocol: 1,
-      serverNowMs: Date.now(),
-      track: session.state().track,
-      totalLaps: session.state().totalLaps,
-      phase: session.state().phase,
-    }));
+    ws.send(buildHelloMessage(session));
     ws.send(buildSnapshotMessage(session, clients.size));
 
     ws.on('message', (raw) => {
@@ -130,9 +143,25 @@ export function createSpectatorHub(httpServer, session, {
     ws.on('error', () => {}); // close follows
   });
 
+  /**
+   * A new race session opened (MCPG-34): re-broadcast hello + snapshot to
+   * every connected client so they reset (drop the finished overlay, re-init
+   * the scene from the new raceId). Also resets the final-broadcast guard so
+   * the new session's finished snapshot is sent exactly once again.
+   */
+  const reset = () => {
+    finishedNotified = false;
+    const hello = buildHelloMessage(session);
+    const snap = buildSnapshotMessage(session, clients.size);
+    sendToAll(hello);
+    sendToAll(snap);
+    onEvent({ type: 'spectator_reset_broadcast', raceId: session.raceId ?? null, spectators: clients.size });
+  };
+
   return {
     path,
     clientCount: () => clients.size,
+    reset,
     /**
      * Send the final snapshot right now, synchronously. The entry points
      * call this before they print `race_complete` and the orchestrator

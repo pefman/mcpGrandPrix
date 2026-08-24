@@ -79,8 +79,29 @@ function onSnapshot(msg) {
 
   if (msg.phase === 'finished') {
     ui.showFinishedOverlay(msg.standings, carNameById);
+  } else {
+    // Rotation: the persistent server (MCPG-34) opens a new session — the
+    // 'reset' event already cleared the scene; drop the finished overlay so
+    // the next race's setup overlay / live view shows through.
+    ui.hideFinishedOverlay();
   }
+
+  ui.setPending(msg.pending);
 }
+
+conn.addEventListener('reset', () => {
+  // A NEW race session started (server rotated after the results hold).
+  scene?.dispose?.();
+  scene = null;
+  sceneStarting = false;
+  buffer?.clear?.();
+  buffer = null;
+  lastSnapshot = null;
+  for (const k of Object.keys(carNameById)) delete carNameById[k];
+  for (const k of Object.keys(carColorById)) delete carColorById[k];
+  ui.reset();
+  // init() runs on the next snapshot (same track def is cached/loaded there)
+});
 
 function frame() {
   requestAnimationFrame(frame);
@@ -122,6 +143,8 @@ conn.addEventListener('snapshot', (ev) => {
   onSnapshot(ev.detail);
 });
 conn.addEventListener('status', (ev) => {
+  // 'disconnected' during the results hold looks like a drop; keep the
+  // finished overlay up (the snapshot feed resumes on reconnect).
   ui.setConnection(ev.detail);
 });
 

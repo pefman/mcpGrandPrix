@@ -40,6 +40,12 @@
     <div id="lb-rows"></div>
   </div>
 
+  <!-- right: pending queue for the next race (persistent server, MCPG-34) -->
+  <div id="pending-panel" class="hidden">
+    <div class="lb-head" id="pending-count">UP NEXT</div>
+    <div id="pending-rows"></div>
+  </div>
+
   <!-- center overlays -->
   <div id="overlay-start" class="overlay">
     <div class="overlay-card">
@@ -57,7 +63,7 @@
     <div class="overlay-card">
       <div class="overlay-title">RACE COMPLETE</div>
       <div id="final-standings"></div>
-      <div class="overlay-sub muted" id="finished-note">The server keeps running only until the last lap is scored.</div>
+      <div class="overlay-sub muted" id="finished-note">Results are held for a moment, then the next race opens.</div>
     </div>
   </div>
 

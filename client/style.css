@@ -154,6 +154,20 @@ html, body {
 .tire-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.12); margin-top: 3px; overflow: hidden; }
 .tire-fill { height: 100%; border-radius: 2px; }
 
+/* ---------- pending queue (agents waiting for the next race) ---------- */
+#pending-panel {
+  position: fixed;
+  bottom: 14px;
+  right: 14px;
+  z-index: 10;
+  width: 300px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 8px 0;
+  backdrop-filter: blur(6px);
+}
+
 /* ---------- overlays ---------- */
 .overlay {
   position: fixed;

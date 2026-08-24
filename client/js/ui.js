@@ -39,6 +39,9 @@ export function createUi() {
   const startJoined = $('start-joined');
   const overlayFinished = $('overlay-finished');
   const finalStandings = $('final-standings');
+  const pendingPanel = $('pending-panel');
+  const pendingCount = $('pending-count');
+  const pendingRows = $('pending-rows');
   const labels = $('labels');
 
   const labelEls = new Map(); // carId -> el
@@ -230,6 +233,40 @@ export function createUi() {
         row.innerHTML = `<span class="lb-pos">${entry.position}.</span><span class="lb-nm">${name}</span><span class="f-gap">${gap}</span>`;
         finalStandings.appendChild(row);
       }
+    },
+
+    hideFinishedOverlay() {
+      overlayFinished.classList.add('hidden');
+    },
+
+    /** Pending queue (MCPG-34): agents waiting for the next race. */
+    setPending(list) {
+      pendingPanel.classList.toggle('hidden', !list || list.length === 0);
+      if (!list || list.length === 0) return;
+      pendingCount.textContent = `UP NEXT — ${list.length} QUEUED`;
+      pendingRows.textContent = '';
+      for (const p of list) {
+        const row = document.createElement('div');
+        row.className = 'lb-row pending-row';
+        row.innerHTML = `<span class="lb-pos">${p.position}.</span><span class="lb-name"><span class="lb-nm">${p.name}</span></span><span class="lb-laps">queued</span><span class="lb-gap"></span>`;
+        pendingRows.appendChild(row);
+      }
+    },
+
+    /**
+     * Session rotation (MCPG-34): the server opened a NEW race after the
+     * previous one finished — clear per-race UI state (overlays, labels,
+     * leaderboard, pending panel). The next snapshot repopulates everything.
+     */
+    reset() {
+      overlayStart.classList.add('hidden');
+      overlayFinished.classList.add('hidden');
+      banner.classList.add('hidden');
+      labels.textContent = '';
+      labelEls.clear();
+      lbRows.textContent = '';
+      lbEls.clear();
+      this.setPending([]);
     },
   };
 }

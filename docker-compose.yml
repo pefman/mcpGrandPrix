@@ -9,7 +9,8 @@
 #
 # The agents service joins the four scripted agents against the server
 # (sequentially, so a fixed seed stays deterministic) and exits when the
-# race ends; the server exits 0 right after the race completes.
+# race ends; the persistent server then holds the result and opens the next
+# session (the agents service is single-use — that is expected here).
 # `docker compose down` cleans everything up.
 services:
   server:

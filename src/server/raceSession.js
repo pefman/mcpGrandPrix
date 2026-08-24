@@ -5,7 +5,16 @@
  * - Runs the hybrid loop: strategy window (wall clock) -> simulation ticks
  *   (wall-clock paced so multiple agents can act while a lap is "running")
  *   -> reactive windows (wall clock, affected cars only) when triggers fire.
- * - Auto-starts the race once at least minAgents have joined.
+ * - Auto-starts the race once at least minAgents have joined (unless the
+ *   `autoStartGate` holds it, e.g. queued agents still have time to claim
+ *   their seats — MCPG-34).
+ *
+ * Options (MCPG-34):
+ *   `logger`        — shared DecisionLogger (persistent server: one log
+ *                     across all races). When omitted the session creates and
+ *                     owns its own.
+ *   `autoStartGate` — `() => boolean`, polled while in `setup`; `true` holds
+ *                     the auto-start.
  *
  * Tests can pass `strategyWindowSeconds: 0` / `reactiveWindowSeconds: 0` and
  * a fast `delayFn` to run a full race as fast as the event loop allows.
@@ -30,8 +39,12 @@ export class RaceSession {
     logFile = null,
     logToStdout = true,
     delayFn = sleep,
+    logger = null,
+    autoStartGate = null,
   } = {}) {
-    this.logger = new DecisionLogger({ file: logFile, stdout: logToStdout });
+    this.ownsLogger = !logger;
+    this.logger = logger ?? new DecisionLogger({ file: logFile, stdout: logToStdout });
+    this.autoStartGate = autoStartGate;
     this.raceId = randomUUID(); // identifies this server instance's race (GET /healthz)
     this.tickWallDelayMs = tickWallDelayMs;
     this.delayFn = delayFn;
@@ -105,10 +118,13 @@ export class RaceSession {
     try {
       while (true) {
         if (this.sim.phase === 'setup') {
-          if (this.sim.cars.length >= CONFIG.race.minAgents) {
+          // Poll the gate even while the grid is not full: the orchestrator
+          // settles expired pending-queue entries through it (MCPG-34).
+          const held = this.autoStartGate ? this.autoStartGate() : false;
+          if (this.sim.cars.length >= CONFIG.race.minAgents && !held) {
             this.start();
           } else {
-            await this.delayFn(100);
+            await this.delayFn(100); // idle poll while waiting for agents
           }
         } else if (this.sim.phase === 'strategy_window') {
           if (this.sim.windowRemainingS() <= 0) {
@@ -138,6 +154,6 @@ export class RaceSession {
 
   close() {
     this._running = false;
-    this.logger.close();
+    if (this.ownsLogger) this.logger.close();
   }
 }
