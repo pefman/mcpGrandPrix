@@ -7,6 +7,8 @@
 import { SpectatorConnection, CarPositionBuffer } from './spectatorClient.js';
 import { createSpectatorScene } from './scene.js';
 import { createUi } from './ui.js';
+import { buildHarnessPrompt, HARNESS_PROMPT_REVISION } from './harnessPrompt.js';
+import { resolveServerOrigin } from './resolveUrl.js';
 
 const RENDER_DELAY_MS = 150; // interpolation delay (see spectatorClient.js)
 
@@ -97,6 +99,43 @@ conn.addEventListener('snapshot', (ev) => {
 conn.addEventListener('status', (ev) => {
   ui.setConnection(ev.detail);
 });
+
+// ---- welcome-screen harness prompt (MCPG-36) ----
+function initHarnessPrompt() {
+  const promptEl = document.getElementById('harness-prompt');
+  const copyBtn = document.getElementById('copy-harness-prompt');
+  const origin = resolveServerOrigin();
+  promptEl.textContent = buildHarnessPrompt({ mcpUrl: origin + '/mcp', spectateUrl: origin });
+  document.getElementById('harness-prompt-rev').textContent = `Prompt v${HARNESS_PROMPT_REVISION}`;
+
+  const fallbackCopy = () => {
+    // non-secure contexts (e.g. LAN over plain http) have no navigator.clipboard
+    const range = document.createRange();
+    range.selectNodeContents(promptEl);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const ok = document.execCommand('copy');
+    sel.removeAllRanges();
+    return ok;
+  };
+
+  copyBtn.addEventListener('click', async () => {
+    let ok = false;
+    if (navigator.clipboard?.writeText) {
+      try {
+        ok = await navigator.clipboard.writeText(promptEl.textContent);
+      } catch {
+        ok = false; // rejected (permissions / non-secure context)
+      }
+    }
+    if (!ok) ok = fallbackCopy();
+    copyBtn.textContent = ok ? 'Copied ✓' : 'Copy failed — select the text above manually';
+    setTimeout(() => { copyBtn.textContent = 'Copy prompt'; }, 2000);
+  });
+}
+
+initHarnessPrompt();
 
 conn.connect();
 requestAnimationFrame(frame);
