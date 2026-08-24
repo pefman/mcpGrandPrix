@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMcpHttpServer } from '../src/server/http.js';
 import { RaceSession } from '../src/server/raceSession.js';
+import { closeServer } from './helpers.js';
 
 /**
  * Slice 2: the game server serves the spectator client's static files
@@ -29,7 +30,7 @@ beforeAll(async () => {
 }, 30000);
 
 afterAll(async () => {
-  await new Promise((resolve) => server.close(resolve));
+  await closeServer(server);
 });
 
 describe('static serving of the spectator client', () => {
