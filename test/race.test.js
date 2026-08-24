@@ -7,21 +7,26 @@ import { RaceSession } from '../src/server/raceSession.js';
 import { runAgent } from '../agents/agentBase.js';
 import { SCRIPTED_AGENTS } from '../src/sim/strategies.js';
 import { createRng } from '../src/rng.js';
+import { driveWindows, closeServer, WINDOW_BACKSTOP_S } from './helpers.js';
 
 /**
  * End-to-end: the exact acceptance scenario from the issue — a 5-lap race
  * with 4 scripted agents driving over MCP, finishing cleanly. Agents run
  * in-process (same client stack the standalone agent processes use); the
  * server runs as a real HTTP listener.
+ *
+ * Windows close the moment all four agents have submitted (driveWindows);
+ * the configured seconds are only a backstop. With 0 ms tick delay the
+ * whole race takes a couple of seconds of real time.
  */
 const TOTAL_LAPS = 5;
-const WINDOW_SECONDS = 1; // real-time window; agents poll at 100ms
 
 let session;
 let server;
 let baseUrl;
 let logFile;
 let runPromise;
+let drivePromise;
 let agentSummaries = [];
 
 const AGENTS = [
@@ -37,8 +42,8 @@ beforeAll(async () => {
 
   session = new RaceSession({
     totalLaps: TOTAL_LAPS,
-    strategyWindowSeconds: WINDOW_SECONDS,
-    reactiveWindowSeconds: WINDOW_SECONDS,
+    strategyWindowSeconds: WINDOW_BACKSTOP_S, // backstop only; windows close on submit
+    reactiveWindowSeconds: WINDOW_BACKSTOP_S,
     tickWallDelayMs: 0,
     seed: 42,
     logFile,
@@ -49,6 +54,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}/mcp`;
 
   runPromise = session.run();
+  drivePromise = driveWindows(session);
 
   agentSummaries = await Promise.all(
     AGENTS.map(async (a) =>
@@ -58,16 +64,17 @@ beforeAll(async () => {
         decide: SCRIPTED_AGENTS[a.profile].decide,
         decideReactive: SCRIPTED_AGENTS[a.profile].decideReactive,
         rng: createRng(a.seed),
-        pollMs: 100,
+        pollMs: 50,
       }),
     ),
   );
+  await drivePromise;
   await runPromise;
-}, 120000);
+}, 30000);
 
 afterAll(async () => {
   session.close();
-  await new Promise((resolve) => server.close(resolve));
+  await closeServer(server);
 });
 
 describe('5-lap race with 4 scripted agents (e2e over MCP)', () => {
@@ -75,7 +82,9 @@ describe('5-lap race with 4 scripted agents (e2e over MCP)', () => {
     expect(agentSummaries).toHaveLength(4);
     for (const s of agentSummaries) {
       expect(s.carId).toBeGreaterThan(0);
-      expect(s.submissions).toBeGreaterThan(0);
+      // Windows close on submit, so each agent submits once per lap;
+      // allow one defaulted lap for a pathological MCP stall (backstop).
+      expect(s.submissions).toBeGreaterThanOrEqual(TOTAL_LAPS - 1);
     }
   });
 
@@ -111,11 +120,11 @@ describe('5-lap race with 4 scripted agents (e2e over MCP)', () => {
     expect(types.filter((t) => t === 'window_opened').length).toBe(TOTAL_LAPS);
     expect(types.filter((t) => t === 'window_closed').length).toBe(TOTAL_LAPS);
 
-    // each agent's decisions must be recorded by the server (agents poll at
-    // 100ms vs a 1s window, so every agent must have submitted at least once)
+    // each agent's decisions must be recorded by the server (windows close
+    // on submit, so each agent submits once per lap — allow one defaulted)
     for (const a of AGENTS) {
       const count = lines.filter((l) => l.type === 'strategy_submitted' && l.name === a.name).length;
-      expect(count, `no strategy_submitted events for agent ${a.name}`).toBeGreaterThan(0);
+      expect(count, `too few strategy_submitted events for agent ${a.name}`).toBeGreaterThanOrEqual(TOTAL_LAPS - 1);
     }
     expect(types.filter((t) => t === 'finish').length).toBe(4);
     expect(types).toContain('race_finished');

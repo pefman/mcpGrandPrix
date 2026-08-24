@@ -9,6 +9,7 @@ import { createSpectatorHub } from '../src/server/spectator.js';
 import { runAgent } from '../agents/agentBase.js';
 import { SCRIPTED_AGENTS } from '../src/sim/strategies.js';
 import { createRng } from '../src/rng.js';
+import { driveWindows, closeServer, waitFor, WINDOW_BACKSTOP_S } from './helpers.js';
 
 /**
  * Slice 2 e2e: real browser-style WebSocket spectators (Node's built-in
@@ -20,9 +21,12 @@ import { createRng } from '../src/rng.js';
  * final snapshot is sent exactly once, and the real browser client class
  * (client/js/spectatorClient.js) survives a mid-race drop by reconnecting
  * and queries GET /state as its end-of-race fallback.
+ *
+ * Windows close on submit (driveWindows) so the race takes a couple of
+ * seconds; the browser client's reconnect backoff is shortened to 100 ms in
+ * the test and the wait for the drop->reconnect is event-based.
  */
 const TOTAL_LAPS = 5;
-const WINDOW_SECONDS = 1;
 const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../client');
 
 let session;
@@ -32,6 +36,7 @@ let baseUrl;
 let wsUrl;
 let logFile;
 let runPromise;
+let drivePromise;
 let agentSummaries = [];
 let spectators = []; // [{name, messages, ws, pongs}]
 let clientConn = null; // the real browser client class (s4)
@@ -63,8 +68,8 @@ beforeAll(async () => {
 
   session = new RaceSession({
     totalLaps: TOTAL_LAPS,
-    strategyWindowSeconds: WINDOW_SECONDS,
-    reactiveWindowSeconds: WINDOW_SECONDS,
+    strategyWindowSeconds: WINDOW_BACKSTOP_S, // backstop only; windows close on submit
+    reactiveWindowSeconds: WINDOW_BACKSTOP_S,
     tickWallDelayMs: 0,
     seed: 42,
     logFile,
@@ -93,12 +98,14 @@ beforeAll(async () => {
   clientConn.connect();
 
   runPromise = session.run();
+  drivePromise = driveWindows(session);
 
   // drop the browser client's socket once the race is in simulation
   const dropClient = new Promise((resolve) => {
     const timer = setInterval(() => {
       if (clientSnaps.some((s) => s.phase === 'simulation')) {
         clearInterval(timer);
+        clientConn.reconnectDelayMs = 100; // test: shrink the reconnect backoff
         clientConn.ws.close(); // server-side drop (as seen by the client)
         resolve();
       }
@@ -133,22 +140,41 @@ beforeAll(async () => {
         decide: SCRIPTED_AGENTS[a.profile].decide,
         decideReactive: SCRIPTED_AGENTS[a.profile].decideReactive,
         rng: createRng(a.seed),
-        pollMs: 100,
+        pollMs: 50,
       }),
     ),
   );
   await midRace;
   await dropClient;
-  // give the reconnect (1 s backoff) time to land
-  await new Promise((resolve) => setTimeout(resolve, 2500));
+  // event-based wait: the browser client dropped and reconnected (100 ms
+  // backoff in the test), no fixed sleep
+  await waitFor(
+    () => {
+      const i = clientStatuses.indexOf('disconnected');
+      return i >= 0 && clientStatuses[i + 1] === 'connected';
+    },
+    5000,
+    'browser client to drop and reconnect',
+  );
+  await drivePromise;
   await runPromise;
-}, 120000);
+  // the hub sends the final 'finished' snapshot on its next 100 ms tick;
+  // wait for it to actually land (event-based, no fixed sleep)
+  await waitFor(
+    () => {
+      const snaps = snapshots(spectators[0]);
+      return snaps.length > 0 && snaps[snaps.length - 1].phase === 'finished';
+    },
+    5000,
+    'finished snapshot to reach spectators',
+  );
+}, 30000);
 
 afterAll(async () => {
   for (const spec of spectators) spec.ws.close();
   hub.close();
   session.close();
-  await new Promise((resolve) => server.close(resolve));
+  await closeServer(server);
 });
 
 const snapshots = (spec) => spec.messages.filter((m) => m.type === 'snapshot');
