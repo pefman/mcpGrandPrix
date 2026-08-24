@@ -1,53 +1,88 @@
 /**
- * The MCP tool surface. One McpServer instance per client session, all bound
- * to the shared RaceSession (and therefore to the single authoritative
- * Simulation).
- *
- * Idempotency rules:
- *  - join_race: same name always returns the same car.
- *  - get_* tools: pure reads, safe to repeat.
- *  - submit_phase_strategy: first valid packet per window wins; repeats are
- *    rejected as duplicates and never change state.
- *  - submit_reactive_action: first valid action per (carId, windowId) wins;
- *    duplicates / wrong-car / closed-window are rejected with no state change.
+ * MCP tool layer. The `host` is either a bare RaceSession (single-race,
+ * used by tests) or a RaceOrchestrator (persistent server, MCPG-34). The
+ * orchestrator routes joins through `joinAgent` so agents joining outside
+ * `setup` land in the pending queue instead of a dead-end error; a bare
+ * session keeps the old join_failed behavior.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
-const jsonResult = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
-
+// Strategy packet: the four tactical levers + a pit request. Every field has
+// a default so a minimal `{}` packet is always valid; unknown fields are
+// rejected to keep the contract tight.
 const strategySchema = z
   .object({
-    pace: z.enum(['push', 'normal', 'manage']).optional(),
-    tireManagement: z.enum(['push', 'normal', 'manage']).optional(),
-    aggression: z.union([z.literal(0), z.literal(1)]).optional(),
-    defend: z.union([z.literal(0), z.literal(1)]).optional(),
-    pitNow: z.boolean().optional(),
+    pace: z.enum(['push', 'normal', 'manage']).default('normal'),
+    tireManagement: z.enum(['manage', 'normal', 'push']).default('normal'),
+    aggression: z.number().min(0).max(1).default(0.5),
+    defend: z.number().min(0).max(1).default(0.5),
+    pitNow: z.boolean().default(false),
   })
-  .passthrough();
+  .strict();
 
-export function createMcpServer(session) {
+// Reactive actions (Slice 3): exactly one per window per car.
+const reactiveTypes = ['attack', 'defend', 'hold', 'pit_now'];
+
+export function createMcpServer(host) {
+  const isOrchestrator = typeof host.joinAgent === 'function';
+  // The active session: the orchestrator exposes the current one; a bare
+  // session is its own session.
+  const current = () => host.session ?? host;
+
   const server = new McpServer({ name: 'mcp-grand-prix', version: '0.1.0' });
 
   server.registerTool(
     'join_race',
     {
-      title: 'Join race',
+      title: 'Join the race',
       description:
-        'Join the race with a display name. Idempotent: calling again with the same name returns the same car. ' +
-        'Returns your carId (required by other tools). The race stays in phase "setup" until minAgents cars have ' +
-        'joined, then the first strategy window opens automatically.',
-      inputSchema: { name: z.string().min(1).max(40) },
+        'Join the current race as a car, or queue for the next one. ' +
+        'In the setup phase you are added to the grid immediately. Outside setup ' +
+        '(or when the grid is full) you are placed in the FIFO pending queue and ' +
+        'promised a seat in the NEXT race session — re-call join_race with the ' +
+        'same name during that session\'s setup to claim it. Idempotent: the same ' +
+        'name joins/claims the same car; joining a queued name again only ' +
+        're-confirms its queue position. The server keeps running across races.',
+      inputSchema: { name: z.string().min(1).describe('Driver/agent display name') },
     },
     async ({ name }) => {
       try {
-        const car = session.addAgent(name, 'mcp-client');
-        const state = session.state();
-        const position = state.standings.find((s) => s.carId === car.id)?.position ?? null;
+        let res;
+        if (isOrchestrator) {
+          res = host.joinAgent(name);
+        } else {
+          const car = current().addAgent(name, 'mcp-client');
+          res = { status: 'joined', car, claimedFromQueue: false };
+        }
+        if (res.status === 'queued') {
+          const state = host.state();
+          return jsonResult({
+            queued: true,
+            name: res.name,
+            position: res.position,
+            phase: state.phase,
+            totalLaps: state.totalLaps,
+            hint: "You are in the FIFO pending queue for the next race. Re-call join_race with the same name during that session's setup phase to claim your seat; use get_race_state to track the phase.",
+          });
+        }
+        if (res.status === 'queue_full') {
+          const state = host.state();
+          return jsonResult({
+            queued: false,
+            error: 'queue_full',
+            maxSize: res.maxSize,
+            phase: state.phase,
+            hint: 'The pending queue is full; retry join_race later.',
+          });
+        }
+        const state = current().state();
+        const position = state.cars.findIndex((c) => c.id === res.car.id) + 1;
         return jsonResult({
-          carId: car.id,
-          name: car.name,
+          carId: res.car.id,
+          name: res.car.name,
           gridPosition: position,
+          claimedFromQueue: res.claimedFromQueue,
           phase: state.phase,
           totalLaps: state.totalLaps,
           minAgents: state.minAgents,
@@ -64,22 +99,26 @@ export function createMcpServer(session) {
     {
       title: 'Get race state',
       description:
-        'Full snapshot of the race: phase, lap, window time left, track, all cars (position, gap, pace strategy, ' +
-        'tire wear, fuel, pit status) and current standings. Pure read — safe to call anytime.',
+        'Full current race state: phase, lap, per-car status/position/tires, standings, ' +
+        'open window details, and the pending queue (names + positions) for the next race. ' +
+        'Poll this to drive your strategy loop; strategy decisions are only accepted while ' +
+        'the phase is strategy_window (same for reactive actions in reactive_window).',
       inputSchema: {},
     },
-    async () => jsonResult(session.state()),
+    async () => jsonResult(host.state()),
   );
 
   server.registerTool(
     'get_car_state',
     {
-      title: 'Get car state',
-      description: 'Snapshot of one car plus its current position. Pure read.',
+      title: 'Get one car\'s state',
+      description:
+        'A single car\'s status, position, tires, fuel and pit state. ' +
+        'The carId comes from join_race.',
       inputSchema: { carId: z.number().int().positive() },
     },
     async ({ carId }) => {
-      const car = session.carView(carId);
+      const car = current().carView(carId);
       return jsonResult(car ?? { error: 'unknown_car' });
     },
   );
@@ -88,28 +127,37 @@ export function createMcpServer(session) {
     'get_standings',
     {
       title: 'Get standings',
-      description: 'Current race standings: position, name, status, completed laps, gap to leader. Pure read.',
+      description:
+        'Current race standings: position per car with lap and gap to leader.',
       inputSchema: {},
     },
-    async () => jsonResult(session.standings()),
+    async () => jsonResult(current().standings()),
   );
 
   server.registerTool(
     'submit_phase_strategy',
     {
-      title: 'Submit phase strategy',
+      title: 'Submit lap strategy',
       description:
-        'Submit your strategy packet for the current strategy window (once per lap). Fields: ' +
-        'pace (push|normal|manage — speed vs. fuel/tire trade), tireManagement (push|normal|manage — wear rate), ' +
-        'aggression (0|1 — initiate overtakes), defend (0|1 — defend position), pitNow (bool — pit this lap). ' +
-        'Omitted fields default to (normal, normal, 0, 0, false). ' +
-        'Idempotent: the first valid submission per window is kept; later submissions are rejected as duplicates.',
+        'Submit this lap\'s strategy packet for your car: pace (push/normal/manage), ' +
+        'tireManagement (manage/normal/push), aggression and defend (0-1), pitNow. ' +
+        'Only accepted while a strategy_window is open; exactly one per car per lap ' +
+        '(re-submitting the same lap returns duplicate_strategy). If you miss the ' +
+        'window the server applies lastStrategy or normal.',
       inputSchema: {
         carId: z.number().int().positive(),
         strategy: strategySchema.optional(),
       },
     },
-    async ({ carId, strategy }) => jsonResult(session.submitPhaseStrategy(carId, strategy ?? {})),
+    async ({ carId, strategy }) => {
+      try {
+        const res = current().submitPhaseStrategy(carId, strategy ?? {});
+        if (res.accepted) return jsonResult({ accepted: true, carId, lap: res.lap });
+        return jsonResult({ accepted: false, error: res.error, details: res.details });
+      } catch (err) {
+        return jsonResult({ accepted: false, error: 'rejected', details: err.message });
+      }
+    },
   );
 
   server.registerTool(
@@ -117,20 +165,31 @@ export function createMcpServer(session) {
     {
       title: 'Submit reactive action',
       description:
-        'React to a short reactive window (8–15 s) opened for your car by a trigger event. ' +
-        'Check get_race_state().reactiveWindow: it lists trigger, carIds, remainingS, and allowedByCar. ' +
-        'Triggers (MVP): close_battle (attack|defend|hold by role), critical_tire_wear (pit_now|hold), ' +
-        'pit_opportunity (pit_now|hold). No response by timeout = hold (no action). ' +
-        'Idempotent: first valid action per window wins; duplicates rejected as duplicate_action; ' +
-        'calls outside a window or for a car not listed return an error and change nothing.',
+        'React to an in-race event window (close battle, safety car, critical tire ' +
+        'wear, pit opportunity): attack, defend, hold or pit_now. Only accepted ' +
+        'while the reactive_window that lists your car is open; exactly one action per ' +
+        'window per car (re-submitting returns duplicate_action). If you miss the ' +
+        'window the server defaults to hold.',
       inputSchema: {
         carId: z.number().int().positive(),
-        type: z.enum(['attack', 'defend', 'hold', 'pit_now']),
-        detail: z.string().max(500).optional(),
+        type: z.enum(reactiveTypes),
+        detail: z.string().optional(),
       },
     },
-    async ({ carId, type, detail }) => jsonResult(session.submitReactiveAction(carId, { type, detail })),
+    async ({ carId, type, detail }) => {
+      try {
+        const res = current().submitReactiveAction(carId, { type, detail });
+        if (res.accepted) return jsonResult({ accepted: true, carId, windowId: res.windowId, action: { type, detail } });
+        return jsonResult({ accepted: false, error: res.error, details: res.details });
+      } catch (err) {
+        return jsonResult({ accepted: false, error: 'rejected', details: err.message });
+      }
+    },
   );
 
   return server;
+}
+
+function jsonResult(obj) {
+  return { content: [{ type: 'text', text: JSON.stringify(obj) }] };
 }

@@ -6,8 +6,9 @@
 # One entrypoint serves everything on one configurable port (PORT, default
 # 3080): MCP Streamable HTTP (POST /mcp), the spectator WebSocket
 # (ws://host:port/spectate), the spectator client (static files at /),
-# GET /state, and GET /healthz. One race per process: the container exits
-# 0 as soon as the race completes. All configuration via env vars — see
+# GET /state, and GET /healthz. The server is persistent: after each race it
+# holds the result (RESULTS_HOLD_SECONDS) and opens the next session; it
+# exits on SIGTERM (docker stop). All configuration via env vars — see
 # README ("Docker" section).
 
 # ---- deps: production node_modules only ---------------------------------

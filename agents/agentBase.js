@@ -5,7 +5,8 @@
  * optional `decideReactive(view, window, rng) -> action` for Slice 3 windows.
  *
  * The agent:
- *   1. joins the race (idempotent by name),
+ *   1. joins the race (idempotent by name); if the race is not in setup it
+ *      lands in the pending queue and waits for the next session's setup
  *   2. polls get_race_state,
  *   3. at the start of each lap's strategy window, computes and submits a
  *      strategy packet (once per lap; retries only on unexpected errors),
@@ -59,10 +60,27 @@ export async function runAgent({
   try {
     await client.connect(transport);
 
-    const joined = await callTool(client, 'join_race', { name });
-    if (joined.error) throw new Error(`join_race failed: ${joined.error}: ${joined.details ?? ''}`);
-    carId = joined.carId;
-    emit({ type: 'agent_joined', name, carId });
+    // Join loop (MCPG-34): outside `setup` (or with a full grid) the server
+    // queues this name for the NEXT session instead of failing. Wait for
+    // that session's setup, then re-join to claim the seat (idempotent by
+    // name). `queue_full` just means: back off and retry.
+    for (;;) {
+      const joined = await callTool(client, 'join_race', { name });
+      if (joined.queued) {
+        emit({ type: 'agent_queued', name, position: joined.position, phase: joined.phase });
+        await waitForSetup(client, { pollMs: Math.max(pollMs, 1000), timeoutMs: 5 * 60 * 1000 });
+        continue;
+      }
+      if (joined.error === 'queue_full') {
+        emit({ type: 'agent_queue_full', name, maxSize: joined.maxSize });
+        await sleep(2000);
+        continue;
+      }
+      if (joined.error) throw new Error(`join_race failed: ${joined.error}: ${joined.details ?? ''}`);
+      carId = joined.carId;
+      emit({ type: 'agent_joined', name, carId, claimedFromQueue: joined.claimedFromQueue === true });
+      break;
+    }
 
     let lastLapSubmitted = null;
     let lastReactiveWindowId = null;
@@ -142,6 +160,21 @@ export async function runAgent({
   }
 
   return { name, carId, submissions, reactiveSubmissions };
+}
+
+/** Poll get_race_state until the next session is in `setup`. */
+async function waitForSetup(client, { pollMs = 1000, timeoutMs = 5 * 60 * 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const state = await callTool(client, 'get_race_state', {});
+      if (!state.error && state.phase === 'setup') return;
+    } catch {
+      /* transient (server restarting) — keep polling */
+    }
+    await sleep(pollMs);
+  }
+  throw new Error('timed out waiting for the next race setup phase');
 }
 
 /** MCP callTool wrapper: parses the JSON text result, tolerates tool-level errors. */

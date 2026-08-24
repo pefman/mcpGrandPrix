@@ -5,6 +5,11 @@
  * Env overrides (read once at process start):
  *   MIN_AGENTS — cars required before the race leaves `setup` (default 4).
  *                Public demo / solo external play: set MIN_AGENTS=1.
+ *   RESULTS_HOLD_SECONDS — persistent server holds results before opening
+ *                the next race session (default 60). (MCPG-34)
+ *   PENDING_GRACE_SECONDS — how long a queued agent has to claim its seat in
+ *                the next session before its queue entry expires (default 30).
+ *                (MCPG-34)
  */
 function envInt(name, fallback) {
   const raw = process.env[name];
@@ -28,6 +33,14 @@ export const CONFIG = {
     // so a lap (40 ticks) takes ~10 s of spectator wall time. Pacing only:
     // it never enters sim math, same seed = same race at any pace.
     tickWallDelayMs: 250,
+    // Persistent server (MCPG-34): after the final lap the results are held
+    // for this long, then a fresh race session opens (setup) so queued agents
+    // and late joiners have a race to get into.
+    resultsHoldSeconds: envInt('RESULTS_HOLD_SECONDS', 60),
+    // A name in the pending queue is only promised a seat in the NEXT session.
+    // If the name is still queued when that session's grace clock expires, the
+    // entry is dropped (the queue is FIFO order, not a reservation).
+    pendingGraceSeconds: envInt('PENDING_GRACE_SECONDS', 30),
   },
 
   reactive: {

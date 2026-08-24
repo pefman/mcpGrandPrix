@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
 import { createMcpHttpServer } from '../src/server/http.js';
 import { RaceSession } from '../src/server/raceSession.js';
 import { createSpectatorHub } from '../src/server/spectator.js';
@@ -299,7 +300,7 @@ describe('spectator WebSocket feed (Slice 2)', () => {
     ).toBe(1);
   });
 
-  it('the browser client class sees /state and reports ended after the race', async () => {
+  it('the browser client class sees /state and reconnects after the race (persistent server)', async () => {
     const { SpectatorConnection } = await import('../client/js/spectatorClient.js');
     // direct check of the fallback endpoint through the client's own code
     const state = await clientConn._fetchState();
@@ -307,27 +308,54 @@ describe('spectator WebSocket feed (Slice 2)', () => {
     expect(state.phase).toBe('finished');
     expect(state.finished).toBe(true);
 
-    // a fresh client after the race: connects, gets the finished snapshot,
-    // socket closes (server-side end) -> status 'ended', no reconnect
+    // MCPG-34: a client watching the finished race while the server is still
+    // alive does NOT treat a socket drop as the end — it reconnects (the
+    // persistent server holds the results, then opens the next session).
     const c = new SpectatorConnection(wsUrl);
     const statuses = [];
     let phase = null;
     c.addEventListener('status', (e) => statuses.push(e.detail));
     c.addEventListener('snapshot', (e) => { phase = e.detail.phase; });
     c.connect();
-    await new Promise((resolve) => {
-      const timer = setInterval(() => {
-        if (phase === 'finished') { clearInterval(timer); resolve(); }
-      }, 10);
-      timer.unref();
-    });
-    c.ws.close(); // simulate the server closing the socket
-    const ended = new Promise((resolve) => {
-      const timer = setInterval(() => {
-        if (statuses.includes('ended')) { clearInterval(timer); resolve(); }
-      }, 10);
-      timer.unref();
-    });
-    await Promise.race([ended, new Promise((_, rej) => setTimeout(() => rej(new Error('no ended status, got: ' + statuses.join(','))), 5000))]);
+    await waitFor(() => phase === 'finished', 5000, 'client to see the finished state');
+    c.reconnectDelayMs = 50;
+    c.ws.close(); // raw-socket close: a server-side drop as seen by the client
+    // (bypasses the user-initiated flag, like the mid-race drop above)
+    await waitFor(
+      () => {
+        const i = statuses.indexOf('disconnected');
+        return i >= 0 && statuses[i + 1] === 'connected';
+      },
+      5000,
+      'client to reconnect after the post-race drop',
+    );
+    c.close();
+  });
+
+  it('the browser client class reports ended only when the server is gone', async () => {
+    const { SpectatorConnection } = await import('../client/js/spectatorClient.js');
+    // obtain a guaranteed-dead port: listen once, then close the listener
+    const probe = http.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const deadPort = probe.address().port;
+    await new Promise((resolve) => probe.close(resolve));
+
+    const c = new SpectatorConnection(`ws://127.0.0.1:${deadPort}/spectate`);
+    c.reconnectDelayMs = 50;
+    c.endedAfterFails = 3; // test: shrink the ~10-failure threshold
+    const statuses = [];
+    c.addEventListener('status', (e) => statuses.push(e.detail));
+    c.connect();
+    await waitFor(() => statuses.includes('ended'), 5000, 'client to report ended');
+    expect(statuses.slice(0, statuses.indexOf('ended') + 1).join(','), 'ended after repeated failures')
+      .toBe('disconnected,disconnected,ended');
+    // Retries keep running after 'ended' — a redeployed server would flip
+    // the status back to 'connected'.
+    await waitFor(
+      () => statuses.filter((st) => st === 'ended').length >= 2,
+      2000,
+      'background retries to continue after ended',
+    );
+    c.close(); // stop the background retries
   });
 });

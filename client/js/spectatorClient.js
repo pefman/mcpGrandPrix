@@ -23,6 +23,9 @@ export class SpectatorConnection extends EventTarget {
     this.phase = null; // last known race phase (null until first snapshot)
     this.spectators = null;
     this.lastSnapshotAt = 0;
+    this.raceId = null; // current race session id (null on old/single-race servers)
+    this.endedAfterFails = 10; // failed reconnects before status 'ended' (tests lower this)
+    this._sawFinished = false; // has this client seen a finished phase (rotation detector)
     this._reconnectTimer = null;
     this._pingTimer = null;
     this._reconnectFails = 0;
@@ -54,6 +57,15 @@ export class SpectatorConnection extends EventTarget {
         return;
       }
       if (msg.type === 'hello') {
+        // Rotation detection (MCPG-34): a NEW raceId after having seen
+        // `finished` means the persistent server opened the next session —
+        // drop the finished overlay and re-init the scene.
+        const rotated = msg.raceId != null && this.raceId != null && msg.raceId !== this.raceId && this._sawFinished;
+        this.raceId = msg.raceId ?? null;
+        if (rotated) {
+          this._sawFinished = false;
+          this.emit('reset', msg);
+        }
         this.emit('hello', msg);
         return;
       }
@@ -61,6 +73,7 @@ export class SpectatorConnection extends EventTarget {
         this.lastSnapshotAt = performance.now();
         this.phase = msg.phase;
         this.spectators = msg.spectators ?? null;
+        if (msg.phase === 'finished') this._sawFinished = true;
         this.emit('snapshot', msg);
         return;
       }
@@ -74,29 +87,36 @@ export class SpectatorConnection extends EventTarget {
     ws.addEventListener('close', async () => {
       this.connected = false;
       this._stopPingTimer();
-      if (this.phase === 'finished') {
-        // The race is over; the server shutting down is expected.
-        this.emit('status', 'ended');
-        return;
-      }
+      if (this._closedByUser) return;
       if (!attemptConnected) this._reconnectFails += 1;
       if (attemptConnected && this.phase) {
-        // We were watching the race but never got the final snapshot —
-        // the server may have already exited, taking the last frame with
-        // it. Ask it directly for the current state before reconnecting.
+        // We were watching the race but the socket died — ask the server
+        // for the current state before deciding what happened.
         const state = await this._fetchState();
         if (state && state.phase === 'finished') {
+          // MCPG-34: the persistent server keeps running after the race
+          // (results hold, then the next session). Stay connected: the
+          // reconnect will pick up the new session via the rotated hello.
           this.phase = 'finished';
-          this.spectators = state.spectators ?? null;
           this.emit('snapshot', state);
+          this.emit('status', 'disconnected');
+          this._scheduleReconnect();
+          return;
+        }
+        if (!state && this.phase === 'finished') {
+          // Server unreachable AND the race is over: a single-race server
+          // exits right after the final snapshot, so this is a clean end.
+          // Retries continue in the background — a redeployed server flips
+          // the status back to 'connected'.
           this.emit('status', 'ended');
+          this._scheduleReconnect();
           return;
         }
       }
-      // 'ended' after ~10 failed attempts: the single-race server only
-      // disappears once the race is over; keep retrying in the background
-      // in case it comes back, but stop claiming we are still reconnecting.
-      this.emit('status', this._reconnectFails >= 10 ? 'ended' : 'disconnected');
+      // 'ended' after many failed attempts: stop claiming we are still
+      // reconnecting (retrying continues in the background — a successful
+      // reconnect flips back to 'connected').
+      this.emit('status', this._reconnectFails >= this.endedAfterFails ? 'ended' : 'disconnected');
       this._scheduleReconnect();
     });
 
@@ -144,9 +164,9 @@ export class SpectatorConnection extends EventTarget {
   _startPingTimer() {
     this._stopPingTimer();
     this._pingTimer = setInterval(() => {
-      // Keep the host awake only while the race is running (setup through
-      // simulation). After 'finished' the server is about to exit anyway.
-      if (this.phase !== 'finished') this.sendPing();
+      // Keep the host awake for as long as the tab is open: the persistent
+      // server (MCPG-34) also serves the results hold and the next session.
+      this.sendPing();
     }, 30000);
     if (typeof this._pingTimer.unref === 'function') this._pingTimer.unref();
   }

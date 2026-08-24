@@ -107,8 +107,10 @@ join order produce the exact same race.
 Everything runs from a single multi-stage image (`Dockerfile`,
 node:22-alpine, non-root user `node`): the game server with its MCP endpoint,
 spectator WebSocket, spectator client, and `GET /healthz` — all on one
-configurable port. One race per process: the container exits 0 a few seconds
-after the race finishes.
+configurable port. The server is persistent: it holds the result for
+`RESULTS_HOLD_SECONDS` after each race, opens the next session (agents may
+queue for it via `join_race` outside `setup`), and only exits on SIGTERM
+(`docker stop`).
 
 ```bash
 docker build -t mcp-grand-prix .
@@ -151,6 +153,8 @@ the same spectator build standalone on port 8080 (split-deploy demo).
 | `SEED` | `42` | deterministic seed (same seed + same join order = same race) |
 | `LOG_FILE` | stdout only | decision log path (the compose stack uses `/logs/race.jsonl`, mounted at `./log/`) |
 | `MIN_AGENTS` | `4` | cars required before the race leaves `setup` and opens the first strategy window. Set to `1` for solo / public-demo play. |
+| `RESULTS_HOLD_SECONDS` | `60` | how long the finished result is held before the next race session opens (persistent server). |
+| `PENDING_GRACE_SECONDS` | `30` | a queued agent must re-`join_race` within this window after the next session opens, or its reserved seat is dropped from the FIFO pending queue. |
 
 For bare local runs, the CLI args to `node src/server/main.js`
 (port, laps, window s, tick delay ms, seed, log file) override the env vars.
@@ -167,15 +171,15 @@ gives the full four-car demo via `npm run demo:public`). POSTs must send
 
 ### Hosting notes (free tier)
 
-The server idles in the `setup` phase until `MIN_AGENTS` agents join, then runs one
-race of a few minutes and exits 0 — a good fit for "scale to zero" platforms.
-Free tiers sleep idle instances, and the server has no *outbound* keep-alive
+The server idles in the `setup` phase until `MIN_AGENTS` agents join, runs
+the race, holds the result, and opens the next session — it does not exit
+between races (MCPG-34). That is a poor fit for "scale to zero" platforms,
+which would keep billing an instance that idles in `setup` forever; free
+tiers also sleep idle instances, and the server has no *outbound* keep-alive
 (inbound spectator pings only, see *Spectator client*) — so a race with a
-connected spectator keeps the instance awake, while a race with nobody
-watching may be hibernated mid-race on a free tier. The current deployment
-is a VPS (always-on, see *VPS deploy*), where this is a non-issue; if the
-game ever moves to a scale-to-zero platform, re-running after a cold start
-is cheap because the seeded race is deterministic.
+connected spectator keeps the instance awake, while idle windows may be
+hibernated. The current deployment is a VPS (always-on, see *VPS deploy*),
+where this is a non-issue.
 
 ### VPS deploy (`scripts/deploy.sh`)
 
@@ -241,8 +245,11 @@ Any MCP client can race. Against a running server (local `npm start`, or
    `Accept: application/json, text/event-stream` (the standard MCP SDK
    transport does this for you).
 2. `join_race { name: "YourDriver" }` — returns your `carId` and grid
-   position. Joining is only possible while the phase is `setup`; once
-   `MIN_AGENTS` cars are in, the race starts and joining closes.
+   position. Joining works while the phase is `setup`; outside `setup` the
+   server queues you (FIFO, up to the grid size) and returns `queued` with
+   your position — re-call `join_race` during the next `setup` within
+   `PENDING_GRACE_SECONDS` and your seat is guaranteed. A full queue returns
+   `queue_full`; retry a bit later.
 3. Loop:
    - `get_race_state` while the phase is `strategy_window` → submit one
      `submit_phase_strategy` per window (`pace`, `tireManagement`,
@@ -285,13 +292,17 @@ Slice 3; there is no `vercel.json` yet.)
 | `pong` | server → client | reply to `ping` (inbound traffic keeps free-tier hosts awake mid-race). |
 
 On `phase: 'finished'` the server sends exactly one final snapshot, then goes
-quiet but keeps connections open for the results screen; the client stops
-reconnecting once it has seen it. The server process exits a few seconds
-after the race (by design, it is one race per process): the final snapshot is
-flushed synchronously before `race_complete` is printed, so it lands even
-when the `npm run race` orchestrator kills the server, and the server then
-stays up for a post-race grace period so browsers and orchestrators can still
-fetch the final results. A plain `GET /state` HTTP
+quiet but keeps connections open for the results screen. The server is
+persistent (MCPG-34): after `RESULTS_HOLD_SECONDS` it opens the next session
+and re-broadcasts a new `hello` to every connected client, which resets
+(scene rebuild, overlays cleared, pending queue visible) without a page
+reload. The final snapshot is still flushed synchronously before
+`race_complete` is printed, so it lands even when the `npm run race`
+orchestrator kills the server with SIGTERM. If the socket drops and the
+server has already finished a race, the client asks `GET /state` — a live
+server means "reconnect, the next race is coming", an unreachable one means
+"ended" (retries keep running in the background, so a redeploy flips the
+status back to connected). A plain `GET /state` HTTP
 endpoint returns the same state as JSON — the client uses it as a fallback if
 its socket drops without a `finished` frame (e.g. the host went to sleep),
 and `2+ spectators` remain stable through a full race because each tab is an
