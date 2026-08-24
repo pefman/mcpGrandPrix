@@ -3,7 +3,8 @@
  *
  *   node src/server/main.js [port] [totalLaps] [windowSeconds] [tickDelayMs] [seed] [logFile]
  *
- * Env overrides: PORT, LAPS, WINDOW_SECONDS, TICK_DELAY_MS, SEED, LOG_FILE.
+ * Env overrides: PORT, LAPS, WINDOW_SECONDS, TICK_DELAY_MS, SEED, LOG_FILE,
+ * MIN_AGENTS (cars required to leave setup; default 4 — use 1 for solo demo).
  * Prints one JSON object per line on stdout: server_ready, every logged
  * race event/decision, and race_complete with final standings.
  *

@@ -1,11 +1,22 @@
 /**
  * Central game configuration. Every tunable lives here so the rules are
  * readable in one place. Units are metric unless noted.
+ *
+ * Env overrides (read once at process start):
+ *   MIN_AGENTS — cars required before the race leaves `setup` (default 4).
+ *                Public demo / solo external play: set MIN_AGENTS=1.
  */
+function envInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 export const CONFIG = {
   race: {
     totalLaps: 20, // default; a race session may be created with fewer (tests use 5)
-    minAgents: 4,
+    minAgents: envInt('MIN_AGENTS', 4),
     maxAgents: 8,
   },
 

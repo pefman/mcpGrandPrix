@@ -173,6 +173,11 @@ html, body {
   margin-bottom: 10px;
 }
 .overlay-sub { color: var(--text); font-size: 13px; margin-top: 6px; }
+.overlay-sub code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
 #final-standings { margin-top: 10px; font-size: 14px; }
 .final-row { display: grid; grid-template-columns: 34px 1fr 90px; gap: 8px; padding: 4px 0; text-align: left; }
 .final-row .f-gap { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }

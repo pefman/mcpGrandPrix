@@ -332,6 +332,8 @@ export class Simulation {
       phase: this.phase,
       currentLap: this.phase === 'setup' ? 0 : this.currentLap,
       totalLaps: this.totalLaps,
+      minAgents: CONFIG.race.minAgents,
+      maxAgents: CONFIG.race.maxAgents,
       raceTimeS: Math.round(this.raceTimeS * 100) / 100,
       strategyWindowSeconds: this.strategyWindowSeconds,
       windowRemainingS: Math.round(this.windowRemainingS() * 100) / 100,

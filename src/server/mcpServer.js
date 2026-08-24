@@ -35,20 +35,23 @@ export function createMcpServer(session) {
       title: 'Join race',
       description:
         'Join the race with a display name. Idempotent: calling again with the same name returns the same car. ' +
-        'Returns your carId, which is required by the other tools.',
+        'Returns your carId (required by other tools). The race stays in phase "setup" until minAgents cars have ' +
+        'joined, then the first strategy window opens automatically.',
       inputSchema: { name: z.string().min(1).max(40) },
     },
     async ({ name }) => {
       try {
         const car = session.addAgent(name, 'mcp-client');
-        const standings = session.standings();
-        const position = standings.find((s) => s.carId === car.id)?.position ?? null;
+        const state = session.state();
+        const position = state.standings.find((s) => s.carId === car.id)?.position ?? null;
         return jsonResult({
           carId: car.id,
           name: car.name,
           gridPosition: position,
-          phase: session.state().phase,
-          totalLaps: session.state().totalLaps,
+          phase: state.phase,
+          totalLaps: state.totalLaps,
+          minAgents: state.minAgents,
+          carsJoined: state.cars.length,
         });
       } catch (err) {
         return jsonResult({ error: 'join_failed', details: err.message });

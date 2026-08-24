@@ -44,6 +44,9 @@ npm test
 # start a bare race server (MCP endpoint on http://127.0.0.1:3080/mcp)
 npm start
 
+# solo / public-demo mode: race leaves setup as soon as the first agent joins
+MIN_AGENTS=1 npm start
+
 # run one scripted agent against a running server
 npm run agent -- --profile aggressive --name Aggro --url http://127.0.0.1:3080/mcp --seed 7
 ```
@@ -69,8 +72,11 @@ after the race finishes.
 ```bash
 docker build -t mcp-grand-prix .
 
-# bare game server (agents join over MCP; the race auto-starts with 4)
+# bare game server (agents join over MCP; the race auto-starts at MIN_AGENTS, default 4)
 docker run --rm -p 3080:3080 mcp-grand-prix
+
+# public demo / solo external play — one agent is enough to leave setup
+docker run --rm -p 3080:3080 -e MIN_AGENTS=1 mcp-grand-prix
 ```
 
 ### Full local race in containers (`docker compose`)
@@ -102,13 +108,22 @@ the same spectator build standalone on port 8080 (split-deploy demo).
 | `TICK_DELAY_MS` | `8` | wall delay between sim ticks (0 = max speed) |
 | `SEED` | `42` | deterministic seed (same seed + same join order = same race) |
 | `LOG_FILE` | stdout only | decision log path (the compose stack uses `/logs/race.jsonl`, mounted at `./log/`) |
+| `MIN_AGENTS` | `4` | cars required before the race leaves `setup` and opens the first strategy window. Set to `1` for solo / public-demo play. |
 
 For bare local runs, the CLI args to `node src/server/main.js`
 (port, laps, window s, tick delay ms, seed, log file) override the env vars.
+`MIN_AGENTS` is env-only (see `src/config.js`).
+
+### Public endpoint
+
+Live demo (VPS): **`https://gp.peterfrank.se/mcp`** — MCP Streamable HTTP.
+Spectator: `https://gp.peterfrank.se/`. The race stays in `setup` until
+`MIN_AGENTS` cars have joined (demo deploy uses `MIN_AGENTS=1`). POSTs must
+send `Accept: application/json, text/event-stream`.
 
 ### Hosting notes (free tier)
 
-The server idles in the `setup` phase until four agents join, then runs one
+The server idles in the `setup` phase until `MIN_AGENTS` agents join, then runs one
 race of a few minutes and exits 0 — a good fit for "scale to zero" platforms.
 Free tiers sleep idle instances, and the server has no *outbound* keep-alive
 (inbound spectator pings only, see *Spectator client*) — so a race with a

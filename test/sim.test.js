@@ -96,6 +96,21 @@ describe('parseStrategy', () => {
   });
 });
 
+describe('Simulation: minAgents gate', () => {
+  it('exposes minAgents/maxAgents on state()', () => {
+    const sim = makeSim();
+    const state = sim.state();
+    expect(state.minAgents).toBe(CONFIG.race.minAgents);
+    expect(state.maxAgents).toBe(CONFIG.race.maxAgents);
+  });
+
+  it('refuses to start with fewer than minAgents cars', () => {
+    const sim = makeSim();
+    sim.addAgent('Solo', 's');
+    expect(() => sim.start()).toThrow(/need at least/);
+  });
+});
+
 describe('Simulation: strategy window idempotency', () => {
   it('first submission wins, duplicates are rejected', () => {
     const sim = makeSim();
@@ -326,5 +341,40 @@ describe('Simulation: reactive window stub', () => {
     const r = sim.submitReactiveAction(sim.cars[0].id, { type: 'attack' });
     expect(r).toEqual({ accepted: false, error: 'reactive_windows_not_yet_available' });
     expect(sim.submitReactiveAction(999, { type: 'attack' })).toEqual({ accepted: false, error: 'unknown_car' });
+  });
+});
+
+describe('RaceSession: auto-start at minAgents', () => {
+  it('leaves setup when the Nth agent joins (MIN_AGENTS=1)', async () => {
+    const { RaceSession } = await import('../src/server/raceSession.js');
+    const prev = CONFIG.race.minAgents;
+    CONFIG.race.minAgents = 1;
+    const session = new RaceSession({
+      totalLaps: 1,
+      strategyWindowSeconds: 0.05,
+      tickWallDelayMs: 0,
+      delayFn: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))),
+      logToStdout: false,
+      seed: 99,
+    });
+    try {
+      const runPromise = session.run();
+      expect(session.state().phase).toBe('setup');
+      session.addAgent('Solo', 's');
+      let leftSetup = false;
+      for (let i = 0; i < 80; i++) {
+        if (session.state().phase !== 'setup') {
+          leftSetup = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      expect(leftSetup).toBe(true);
+      session.close();
+      await runPromise;
+    } finally {
+      CONFIG.race.minAgents = prev;
+      session.close();
+    }
   });
 });
