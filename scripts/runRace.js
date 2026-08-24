@@ -126,6 +126,8 @@ server.stdout.on('data', (chunk) => {
       const ev = JSON.parse(line);
       if (ev.type === 'server_ready') {
         console.log(`\n=== MCP Grand Prix: ${laps}-lap race, ${AGENTS.length} scripted agents ===`);
+        console.log(`Spectate in a browser:  ${ev.spectatorUrl}`);
+        console.log(`(or point any client at ${ev.spectateWs})`);
         startAgentsSequentially();
         agentsStarted = true;
       } else if (ev.type === 'race_complete') {
@@ -146,7 +148,7 @@ server.stdout.on('data', (chunk) => {
         killAll(1);
       } else {
         // pass through selected events so the race is visible
-        if (['race_start', 'window_opened', 'window_closed', 'strategy_submitted', 'strategy_defaulted', 'pit_stop_enter', 'pit_stop_complete', 'overtake', 'finish', 'retired'].includes(ev.type)) {
+        if (['race_start', 'window_opened', 'window_closed', 'strategy_submitted', 'strategy_defaulted', 'pit_stop_enter', 'pit_stop_complete', 'overtake', 'finish', 'retired', 'spectator_connected', 'spectator_disconnected'].includes(ev.type)) {
           console.log(line);
         }
       }
