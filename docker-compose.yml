@@ -26,6 +26,8 @@ services:
       TICK_DELAY_MS: ${TICK_DELAY_MS:-5}
       SEED: ${SEED:-42}
       LOG_FILE: /logs/race.jsonl
+      # Public demo / solo MCP play: set MIN_AGENTS=1 (default 4).
+      MIN_AGENTS: ${MIN_AGENTS:-4}
     ports:
       - "3080:3080"
     volumes:

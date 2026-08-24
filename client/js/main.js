@@ -45,9 +45,10 @@ function onSnapshot(msg) {
   ui.setLeaderboard(msg);
 
   if (msg.phase === 'setup') {
+    const need = msg.minAgents ?? 4;
     ui.showStartOverlay(
       'Waiting for the grid to fill…',
-      `${msg.cars.length} of 4 agents joined — the race starts automatically`,
+      `${msg.cars.length} of ${need} agents joined — the race starts automatically`,
     );
   } else {
     ui.hideStartOverlay();
