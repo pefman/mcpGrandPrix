@@ -3,3 +3,4 @@ log/*
 !log/.gitkeep
 *.log
 .DS_Store
+.visual/

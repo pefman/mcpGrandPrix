@@ -27,6 +27,7 @@ COPY src ./src
 COPY agents ./agents
 COPY client ./client
 COPY scripts ./scripts
+COPY tracks ./tracks
 # decision-log volume (mounted at /logs by docker compose); pre-owned by the
 # non-root user so the bind mount is writable from the first start
 RUN mkdir -p /logs && chown node:node /logs

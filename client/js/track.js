@@ -1,188 +1,363 @@
 /**
- * Track geometry for the spectator scene.
+ * Track rendering (MCPG-27 rewrite).
  *
- * The Slice 1 server track is a 1-D loop: 1000 m, five 200 m sectors
- * (src/track.js). The server never stores a shape, so the client draws a
- * simple, readable circuit and normalizes its arc length to the server's
- * track length: (lap, s) -> curve.getPointAt(s / lengthM) gives the exact
- * meter position, and all relative gaps are preserved (Leclerc, MCPG-12 Q3).
+ * Builds the visual track from a track *definition* (tracks/*.json):
+ * Catmull-Rom centerline normalized to the sim's exact length, textured
+ * road ribbon, curb runs on hard corners, checker start line, pit lane +
+ * boxes, water, themed ground, and props (hand-placed + seeded scatter).
+ *
+ * Everything is plain boxes/ribbons sampled with NearestFilter textures —
+ * the pixel-art direction lives here and in pixelTextures.js / props.js.
  */
 import * as THREE from 'three';
+import { makeGroundTexture, makeRoadTexture, makeCheckerTexture } from './pixelTextures.js';
+import { buildProps, scatterProps } from './props.js';
+import { createRng } from './rng.js';
 
-const ROAD_WIDTH_M = 13;
+const CURB_MIN_RUN_M = 15;
+const CURB_WIDTH_M = 2.2;
+const CURB_STRIDE_M = 4;
+const CURVATURE_SAMPLES = 240;
 
-// Closed circuit control points (x, z) in meters, counter-clockwise on
-// screen, start/finish on the bottom straight travelling +x.
-const CONTROL_POINTS = [
-  [150, 130], // s=0: start/finish
-  [210, 90],
-  [226, 10],
-  [200, -70],
-  [130, -120],
-  [30, -132],
-  [-60, -112],
-  [-132, -70],
-  [-192, 0],
-  [-170, 80],
-  [-100, 122],
-  [20, 136],
-];
+/**
+ * Waypoints -> closed centripetal Catmull-Rom curve, uniformly rescaled so
+ * getLength() matches the sim's track length (s maps linearly to curve u).
+ */
+function createTrackCurve(def, lengthM) {
+  const pts = def.waypoints.map(([x, z]) => new THREE.Vector3(x, 0, z));
+  const curve0 = new THREE.CatmullRomCurve3(pts, true, 'centripetal', 0.5);
 
-/** Build the centerline curve, scaled so its arc length is exactly lengthM. */
-export function createTrackCurve(lengthM) {
-  const pts = CONTROL_POINTS.map(([x, z]) => new THREE.Vector3(x, 0, z));
-  const curve = new THREE.CatmullRomCurve3(pts, true, 'centripetal');
-  // Uniform scaling scales arc length by the same factor.
-  const scale = lengthM / curve.getLength();
-  pts.forEach((p) => p.multiplyScalar(scale));
-  return curve;
+  // scale about the waypoints' center of mass (keeps the track centered)
+  const c = new THREE.Vector3();
+  for (const p of pts) c.add(p);
+  c.divideScalar(pts.length);
+
+  const rawLen = curve0.getLength();
+  const scale = lengthM / rawLen;
+  const scaled = pts.map((p) => {
+    const d = p.clone().sub(c).multiplyScalar(scale);
+    d.add(c);
+    return d;
+  });
+  return new THREE.CatmullRomCurve3(scaled, true, 'centripetal', 0.5);
 }
 
-function ribbonGeometry(curve, widthM, y = 0.02, samples = 400) {
-  const left = new Float32Array((samples + 1) * 3);
-  const right = new Float32Array((samples + 1) * 3);
-  const up = new THREE.Vector3(0, 1, 0);
-  for (let i = 0; i <= samples; i += 1) {
-    const u = i / samples;
+/**
+ * Flat ribbon along an arc of the base curve.
+ * `offsetM` shifts the ribbon along the outward normal n = (-t.z, 0, t.x).
+ * uvM = meters per one UV unit along the ribbon.
+ */
+function flatRibbon(curve, arclen, u0, u1, { widthM, y = 0, offsetM = 0, segs = 64, uvM = 3, colors = null }) {
+  const pos = [];
+  const uv = [];
+  const col = [];
+  const idx = [];
+  const n = new THREE.Vector3();
+  for (let i = 0; i <= segs; i++) {
+    const u = u0 + ((u1 - u0) * i) / segs;
     const p = curve.getPointAt(u);
     const t = curve.getTangentAt(u);
-    // outward normal for a counter-clockwise loop (see module notes)
-    const n = new THREE.Vector3(-t.z, 0, t.x).normalize();
-    const half = widthM / 2;
-    left[i * 3] = p.x + n.x * half;
-    left[i * 3 + 1] = y;
-    left[i * 3 + 2] = p.z + n.z * half;
-    right[i * 3] = p.x - n.x * half;
-    right[i * 3 + 1] = y;
-    right[i * 3 + 2] = p.z - n.z * half;
-  }
-  const positions = new Float32Array((samples + 1) * 2 * 3);
-  const indices = [];
-  for (let i = 0; i <= samples; i += 1) {
-    positions.set(left.slice(i * 3, i * 3 + 3), (i * 2) * 3);
-    positions.set(right.slice(i * 3, i * 3 + 3), (i * 2 + 1) * 3);
-    if (i < samples) {
-      const a = i * 2;
-      indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    n.set(-t.z, 0, t.x);
+    const cx = p.x + n.x * offsetM;
+    const cz = p.z + n.z * offsetM;
+    const hx = n.x * (widthM / 2);
+    const hz = n.z * (widthM / 2);
+    pos.push(cx - hx, y, cz - hz, cx + hx, y, cz + hz);
+    const sMeters = u * arclen;
+    uv.push(sMeters / uvM, 0);
+    uv.push(sMeters / uvM, 1);
+    if (colors) {
+      const cc = colors(sMeters);
+      for (let k = 0; k < 2; k++) col.push(cc.r, cc.g, cc.b);
     }
   }
+  for (let i = 0; i < segs; i++) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  if (colors) geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
   geo.computeVertexNormals();
   return geo;
 }
 
-function stripeAt(curve, sM, lengthM, color, widthScale = 1) {
-  const u = (sM % lengthM) / lengthM;
-  const p = curve.getPointAt(u);
-  const t = curve.getTangentAt(u);
-  const n = new THREE.Vector3(-t.z, 0, t.x).normalize();
-  const stripe = new THREE.Mesh(
-    new THREE.BoxGeometry(ROAD_WIDTH_M * widthScale, 0.12, 1.6),
-    new THREE.MeshBasicMaterial({ color }),
-  );
-  stripe.position.set(p.x, 0.06, p.z);
-  // orient the long axis along the road normal (across the road)
-  stripe.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), n);
-  return stripe;
+/** Ribbon on an [s0, s1] arc in meters; splits the arc when it wraps past lengthM. */
+function ribbonOnArc(base, arclen, lengthM, s0, s1, opts) {
+  const pieces = [];
+  let a = ((s0 % lengthM) + lengthM) % lengthM;
+  let b = s1 - s0;
+  while (b > 0) {
+    const end = Math.min(b, lengthM - a);
+    const u0 = a / arclen;
+    const u1 = (a + end) / arclen;
+    const segs = Math.max(4, Math.ceil((end / lengthM) * 220));
+    pieces.push(flatRibbon(base, arclen, u0, u1, { ...opts, segs }));
+    a = (a + end) % lengthM;
+    b -= end;
+  }
+  return pieces;
+}
+
+/** Low wall (barrier) along an arc: quad from y to y+h on the outer edge. */
+function wallRibbon(base, arclen, s0, s1, { h, y = 0, offsetM, segs = 120 }) {
+  const pos = [];
+  const idx = [];
+  for (let i = 0; i <= segs; i++) {
+    const u = s0 + ((s1 - s0) * i) / segs;
+    const p = base.getPointAt(u);
+    const t = base.getTangentAt(u);
+    const nx = -t.z;
+    const nz = t.x;
+    const x = p.x + nx * offsetM;
+    const z = p.z + nz * offsetM;
+    pos.push(x, y, z, x, y + h, z);
+  }
+  for (let i = 0; i < segs; i++) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 3, a + 1, a + 2, a + 3);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Curvature (1/m) at each sample index. */
+function curvatureSamples(curve, arclen) {
+  const out = new Array(CURVATURE_SAMPLES);
+  const t0 = new THREE.Vector3();
+  const t1 = new THREE.Vector3();
+  for (let i = 0; i < CURVATURE_SAMPLES; i++) {
+    t0.copy(curve.getTangentAt(i / CURVATURE_SAMPLES));
+    t1.copy(curve.getTangentAt((i + 1) / CURVATURE_SAMPLES));
+    const ang = Math.acos(THREE.MathUtils.clamp(t0.dot(t1), -1, 1));
+    out[i] = ang / (arclen / CURVATURE_SAMPLES);
+  }
+  return out;
+}
+
+/** Contiguous arcs (in meters, s0/s1 with s1 possibly past lengthM) where curvature >= threshold. */
+function curbRuns(curve, arclen, lengthM, threshold = 0.021, minRunM = CURB_MIN_RUN_M) {
+  const curv = curvatureSamples(curve, arclen);
+  const hot = curv.map((c) => c >= threshold);
+  const ds = lengthM / CURVATURE_SAMPLES;
+  const runs = [];
+  let i = 0;
+  while (i < CURVATURE_SAMPLES) {
+    if (!hot[i]) { i++; continue; }
+    let j = i;
+    while (j < CURVATURE_SAMPLES && hot[j]) j++;
+    const lenM = (j - i) * ds;
+    if (lenM >= minRunM) {
+      runs.push({ s0: i * ds, s1: i * ds + lenM });
+    }
+    i = j;
+  }
+  // wrap case: hot spans the seam [a..end] + [0..b] -> one merged run
+  if (hot[CURVATURE_SAMPLES - 1] && hot[0]) {
+    const last = runs[runs.length - 1];
+    const first = runs[0];
+    if (last && first && Math.abs(last.s1 - lengthM) < ds + 1e-6 && first.s0 < ds + 1e-6) {
+      runs.shift();
+      runs.push({ s0: last.s0, s1: last.s1 + first.s1 });
+    }
+  }
+  return runs;
 }
 
 /**
- * Build the full track (road, ground, start line, sector ticks, pit lane)
- * and return lookup helpers.
+ * Build the full visual track for a def. Returns
+ * { group, pointAt(s), tangentAt(s), pitBoxes, bbox, theme, def, dispose() }.
  */
-export function buildTrack(scene, trackInfo) {
-  const lengthM = trackInfo.lengthM;
-  const curve = createTrackCurve(lengthM);
+export function buildTrack(scene, trackInfo, def) {
+  const group = new THREE.Group();
+  const lengthM = trackInfo.lengthM ?? def.lengthM;
+  const roadWidthM = def.roadWidthM;
+  const theme = def.theme;
+  const rng = createRng(99);
 
-  // ground
+  const curve = createTrackCurve(def, lengthM);
+  const arclen = curve.getLength();
+  const wrap = (s) => ((s % lengthM) + lengthM) % lengthM;
+  const pointAt = (s) => curve.getPointAt(wrap(s) / arclen);
+  const tangentAt = (s) => curve.getTangentAt(wrap(s) / arclen);
+
+  // ---- ground plane, sized once the bbox is known (see below) so the
+  // theme sky stays visible around the circuit's edge
+  const groundTex = makeGroundTexture(theme);
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(1600, 1100),
-    new THREE.MeshLambertMaterial({ color: 0x10141b }),
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshLambertMaterial({ map: groundTex }),
   );
   ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.05;
-  scene.add(ground);
+  // 2 m below the road: at the spectator camera's shallow angle the road
+  // surface sweeps ~0.4 m of depth per screen pixel, so separations must
+  // exceed that or the surfaces z-fight
+  ground.position.y = -2;
+  group.add(ground);
 
-  // road
-  const road = new THREE.Mesh(
-    ribbonGeometry(curve, ROAD_WIDTH_M),
-    new THREE.MeshLambertMaterial({ color: 0x232a35, side: THREE.DoubleSide }),
-  );
-  scene.add(road);
+  // ---- road (overlays sit >0.6 m above it, beyond the per-pixel depth
+  // sweep, so they never z-fight; polygonOffset would push the road back
+  // ~1.7 m at this camera angle and hide it under the ground)
+  const roadMat = new THREE.MeshLambertMaterial({ map: makeRoadTexture(theme) });
+  const roadGeo = flatRibbon(curve, arclen, 0, 1, {
+    widthM: roadWidthM,
+    y: 0,
+    segs: 220,
+    uvM: theme.road.tileM,
+  });
+  group.add(new THREE.Mesh(roadGeo, roadMat));
 
-  // start/finish line (white + accent halves)
-  const startLine = new THREE.Group();
-  const halfA = new THREE.Mesh(
-    new THREE.BoxGeometry(ROAD_WIDTH_M / 2 - 0.2, 0.12, 1.8),
-    new THREE.MeshBasicMaterial({ color: 0xf2f5f9 }),
-  );
-  const halfB = new THREE.Mesh(
-    new THREE.BoxGeometry(ROAD_WIDTH_M / 2 - 0.2, 0.12, 1.8),
-    new THREE.MeshBasicMaterial({ color: 0x10141b }),
-  );
-  const p0 = curve.getPointAt(0);
-  const t0 = curve.getTangentAt(0);
-  const n0 = new THREE.Vector3(-t0.z, 0, t0.x).normalize();
-  halfA.position.set(n0.x * (ROAD_WIDTH_M / 4), 0.07, n0.z * (ROAD_WIDTH_M / 4));
-  halfB.position.set(-n0.x * (ROAD_WIDTH_M / 4), 0.07, -n0.z * (ROAD_WIDTH_M / 4));
-  startLine.add(halfA, halfB);
-  startLine.position.set(p0.x, 0, p0.z);
-  startLine.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), n0);
-  scene.add(startLine);
-
-  // sector boundary ticks (at sectorLengthM multiples)
-  const sectorLen = trackInfo.sectorLengthM ?? lengthM / (trackInfo.sectorCount ?? 1);
-  for (let i = 1; i < (trackInfo.sectorCount ?? 1); i += 1) {
-    scene.add(stripeAt(curve, i * sectorLen, lengthM, 0xffb020, 0.35));
+  // ---- curbs on hard corners (outer edge, alternating red/white)
+  // gentle circuits (e.g. Coastal Palm) lower the threshold in their theme
+  if (theme.curb) {
+    const red = new THREE.Color(theme.curb.red);
+    const white = new THREE.Color(theme.curb.white);
+    const curbMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    const curbOffset = roadWidthM / 2 + CURB_WIDTH_M / 2 - 0.4;
+    for (const run of curbRuns(curve, arclen, lengthM, theme.curb.threshold ?? 0.021)) {
+      for (const piece of ribbonOnArc(curve, arclen, lengthM, run.s0, run.s1, {
+        widthM: CURB_WIDTH_M,
+        y: 1.0,
+        offsetM: curbOffset,
+        uvM: CURB_STRIDE_M,
+        colors: (s) => (Math.floor(s / CURB_STRIDE_M) % 2 === 0 ? red : white),
+      })) {
+        group.add(new THREE.Mesh(piece, curbMat));
+      }
+    }
   }
 
-  // pit lane: a straight strip on the inside of the start straight,
-  // s = 15..95, offset 20 m inside. One pit box per car (grid order).
-  const PIT_FROM_S = 15;
-  const PIT_TO_S = 95;
-  const PIT_OFFSET_M = 20;
-  const pitCurve = new THREE.Curve();
-  pitCurve.getPoint = (t) => {
-    const s = PIT_FROM_S + (PIT_TO_S - PIT_FROM_S) * t;
-    const u = s / lengthM;
-    const p = curve.getPointAt(u);
-    const tan = curve.getTangentAt(u);
-    const n = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
-    return p.clone().addScaledVector(n, -PIT_OFFSET_M);
-  };
-  const pitLane = new THREE.Mesh(
-    ribbonGeometry(pitCurve, 6, 0.03, 24),
-    new THREE.MeshLambertMaterial({ color: 0x2e3644, side: THREE.DoubleSide }),
-  );
-  scene.add(pitLane);
+  // ---- start/finish checker (straddling s=0)
+  // uvM=1.6 -> exactly the 2 texture rows over the 3.2 m band, and
+  // lengthM % 1.6 === 0 so the rows align with the line
+  const checkerTex = makeCheckerTexture('#f4f4f4', '#15181f', 6, 2);
+  const checkerWidth = Math.max(4, roadWidthM - 1.5);
+  for (const piece of ribbonOnArc(curve, arclen, lengthM, lengthM - 1.6, 1.6, {
+    widthM: checkerWidth,
+    y: 0.6,
+    uvM: 1.6,
+  })) {
+    group.add(new THREE.Mesh(piece, new THREE.MeshLambertMaterial({ map: checkerTex })));
+  }
+
+  // ---- sector ticks
+  const sectorTickMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 });
+  if (trackInfo.sectorCount > 1) {
+    const sectorLen = trackInfo.sectorLengthM ?? lengthM / trackInfo.sectorCount;
+    for (let k = 1; k < trackInfo.sectorCount; k++) {
+      const s = k * sectorLen;
+      const piece = flatRibbon(curve, arclen, s / arclen, (s + 0.8) / arclen, {
+        widthM: roadWidthM - 1,
+        y: 0.8,
+        segs: 1,
+        uvM: 1,
+      });
+      group.add(new THREE.Mesh(piece, sectorTickMat));
+    }
+  }
+
+  // ---- pit lane + boxes (inside of the start straight)
+  const pitOffset = -20;
+  class PitLaneCurve extends THREE.Curve {
+    getPoint(t, target = new THREE.Vector3()) {
+      const s = 15 + (95 - 15) * t;
+      const p = curve.getPointAt(wrap(s) / arclen);
+      const tg = curve.getTangentAt(wrap(s) / arclen);
+      return target.set(p.x + (-tg.z) * pitOffset, 0, p.z + tg.x * pitOffset);
+    }
+  }
+  const pitCurve = new PitLaneCurve();
+  const pitGeo = flatRibbon(pitCurve, pitCurve.getLength(), 0, 1, { widthM: 5, y: 0.5, uvM: 2 });
+  group.add(new THREE.Mesh(pitGeo, new THREE.MeshLambertMaterial({ color: new THREE.Color(theme.pit) })));
 
   const pitBoxes = [];
-  const pitBoxCount = 8; // max agents
-  for (let i = 0; i < pitBoxCount; i += 1) {
-    const s = PIT_FROM_S + 12 + i * ((PIT_TO_S - PIT_FROM_S - 24) / (pitBoxCount - 1));
-    const u = s / lengthM;
-    const p = curve.getPointAt(u);
-    const tan = curve.getTangentAt(u);
-    const n = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
-    const pos = p.clone().addScaledVector(n, -PIT_OFFSET_M);
-    pitBoxes.push({ position: pos, tangent: tan.clone() });
-    const box = new THREE.Mesh(
-      new THREE.BoxGeometry(2.6, 0.14, 8),
-      new THREE.MeshBasicMaterial({ color: 0x3b4456 }),
-    );
-    box.position.set(pos.x, 0.05, pos.z);
-    box.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), tan.clone().setY(0).normalize());
-    scene.add(box);
+  for (const s of [35, 55, 75]) {
+    const p = curve.getPointAt(wrap(s) / arclen);
+    const t = curve.getTangentAt(wrap(s) / arclen);
+    pitBoxes.push({
+      s,
+      pos: new THREE.Vector3(p.x + (-t.z) * pitOffset, 0, p.z + t.x * pitOffset),
+      tangent: t,
+    });
   }
 
-  return {
-    curve,
-    lengthM,
-    pitBoxes,
-    /** Meters s (0..lengthM) -> world point on the centerline. */
-    pointAt: (s) => curve.getPointAt((((s % lengthM) + lengthM) % lengthM) / lengthM),
-    tangentAt: (s) => curve.getTangentAt((((s % lengthM) + lengthM) % lengthM) / lengthM),
-  };
+  // ---- barriers
+  if (theme.barriers) {
+    const barrierMat = new THREE.MeshLambertMaterial({ color: 0xd8dbe2, side: THREE.DoubleSide });
+    group.add(new THREE.Mesh(
+      wallRibbon(curve, arclen, 0, 1, { h: 0.9, y: 0, offsetM: roadWidthM / 2 + 3 }),
+      barrierMat,
+    ));
+  }
+
+  // ---- water
+  const waterCircles = def.water ?? [];
+  if (waterCircles.length && theme.water) {
+    const waterMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.water) });
+    for (const w of waterCircles) {
+      const m = new THREE.Mesh(new THREE.CircleGeometry(w.r, 40), waterMat);
+      m.rotation.x = -Math.PI / 2;
+      m.position.set(w.x, -1.5, w.z);
+      group.add(m);
+    }
+  }
+
+  // ---- props: hand-placed + seeded scatter
+  const samples = [];
+  for (let i = 0; i < 160; i++) {
+    const p = curve.getPointAt(i / 160);
+    samples.push({ x: p.x, z: p.z });
+  }
+  const scattered = scatterProps(def, samples, roadWidthM, waterCircles);
+  group.add(buildProps((def.props ?? []).concat(scattered), rng));
+
+  // ---- bounding box (track only, ground excluded) with generous margin
+  const bbox = new THREE.Box3();
+  const v = new THREE.Vector3();
+  for (let i = 0; i < 100; i++) {
+    v.copy(curve.getPointAt(i / 100));
+    bbox.expandByPoint(v);
+  }
+  // keep the ground plane centered on the circuit, not on the world origin
+  const trackCenter = bbox.getCenter(new THREE.Vector3());
+  ground.position.set(trackCenter.x, -2, trackCenter.z);
+  const GROUND_MARGIN_M = 160; // of sky beyond the circuit on every side
+  const gsize = bbox.getSize(new THREE.Vector3());
+  // PlaneGeometry lies in local XY (normal +Z); after rotation.x = -PI/2
+  // local Y becomes world -Z, so the floor's DEPTH goes in scale.y —
+  // scale.z only stretches the (zero) thickness
+  ground.scale.set(
+    gsize.x + 2 * GROUND_MARGIN_M,
+    gsize.z + 2 * GROUND_MARGIN_M,
+    1,
+  );
+  groundTex.repeat.set(
+    (gsize.x + 2 * GROUND_MARGIN_M) / theme.ground.tileM,
+    (gsize.z + 2 * GROUND_MARGIN_M) / theme.ground.tileM,
+  );
+  bbox.expandByScalar(roadWidthM / 2 + 28);
+  // tall props (city towers) project above the flat circuit bbox —
+  // lift the top so the camera fit keeps them in frame
+  const maxPropH = (def.props ?? []).reduce((m, p) => Math.max(m, p.h ?? 0), 0);
+  if (maxPropH > 0) bbox.max.y += maxPropH;
+
+  function dispose() {
+    group.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+          if (m.map) m.map.dispose();
+          m.dispose();
+        }
+      }
+    });
+  }
+
+  return { group, pointAt, tangentAt, pitBoxes, bbox, theme, def, dispose };
 }

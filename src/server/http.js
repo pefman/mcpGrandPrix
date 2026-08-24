@@ -9,6 +9,8 @@
  *   GET    /state current race state as JSON (spectator fallback, see below)
  *   GET    /healthz 200 + race status (null before anyone joins, then race
  *                   id + phase) — for container platform health checks
+ *   GET    /tracks/<id>.json visual track definition (MCPG-27); only ids that
+ *                   exist in the `tracks/` registry are served
  *
  * Non-MCP GETs may serve static files (`staticDir` option) — used for the
  * spectator client (Slice 2). The spectator WebSocket (`/spectate`, see
@@ -24,6 +26,7 @@ import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpServer } from './mcpServer.js';
 import { tryServeStatic } from './staticFiles.js';
+import { tryServeTrackDef } from '../tracks.js';
 
 const readBody = (req) =>
   new Promise((resolve, reject) => {
@@ -76,6 +79,7 @@ export function createMcpHttpServer(session, { path = '/mcp', staticDir = null }
           res.end(JSON.stringify(state));
           return;
         }
+        if (tryServeTrackDef(req, res)) return;
         if (staticDir && tryServeStatic(req, res, staticDir)) return;
         res.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not found' }));
         return;

@@ -3,9 +3,10 @@
  *
  *   node src/server/main.js [port] [totalLaps] [windowSeconds] [tickDelayMs] [seed] [logFile]
  *
- * Env overrides: PORT, LAPS, WINDOW_SECONDS, REACTIVE_WINDOW_SECONDS,
- * TICK_DELAY_MS, SEED, LOG_FILE, MIN_AGENTS (cars required to leave setup;
- * default 4 — use 1 for solo demo).
+ * Env overrides: PORT, LAPS, WINDOW_SECONDS, REACTIVE_WINDOW_SECONDS (defaults
+ * to WINDOW_SECONDS), TICK_DELAY_MS, SEED, LOG_FILE, MIN_AGENTS (cars required
+ * to leave setup; default 4 — use 1 for solo demo), MCGP_TRACK (track id from
+ * the `tracks/` registry; default `coastal-palm`).
  * Prints one JSON object per line on stdout: server_ready, every logged
  * race event/decision, and race_complete with final standings.
  *
@@ -17,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { createMcpHttpServer } from './http.js';
 import { RaceSession } from './raceSession.js';
 import { createSpectatorHub, SPECTATE_PATH } from './spectator.js';
+import { createTrackFromEnv } from '../tracks.js';
 
 const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client');
 
@@ -36,6 +38,10 @@ const [
   logArg = process.env.LOG_FILE ?? '',
 ] = process.argv;
 
+// MCGP-27: the active track comes from the `tracks/` registry (MCGP_TRACK).
+// Unknown ids throw here — fail fast, before any client connects.
+const track = createTrackFromEnv();
+
 const session = new RaceSession({
   totalLaps: Number(lapsArg),
   strategyWindowSeconds: Number(windowArg),
@@ -45,6 +51,7 @@ const session = new RaceSession({
   reactiveWindowSeconds: Number(process.env.REACTIVE_WINDOW_SECONDS ?? '10'),
   tickWallDelayMs: Number(delayArg),
   seed: Number(seedArg),
+  track,
   logFile: logArg || null,
   logToStdout: true,
 });
@@ -57,6 +64,7 @@ server.listen(Number(portArg), () => {
   console.log(JSON.stringify({
     type: 'server_ready',
     port: Number(portArg),
+    track: track.info(),
     spectatorUrl: `http://127.0.0.1:${portArg}/`,
     spectateWs: `ws://127.0.0.1:${portArg}${SPECTATE_PATH}`,
   }));

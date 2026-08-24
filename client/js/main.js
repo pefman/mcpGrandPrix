@@ -7,6 +7,7 @@
 import { SpectatorConnection, CarPositionBuffer } from './spectatorClient.js';
 import { createSpectatorScene } from './scene.js';
 import { createUi } from './ui.js';
+import { loadTrackDef } from './tracks.js';
 import { buildHarnessPrompt, HARNESS_PROMPT_REVISION } from './harnessPrompt.js';
 import { resolveServerOrigin } from './resolveUrl.js';
 
@@ -17,10 +18,24 @@ const ui = createUi();
 const conn = new SpectatorConnection();
 
 let scene = null;
+let sceneStarting = false;
 let buffer = null;
 let lastSnapshot = null;
 const carNameById = {};
 const carColorById = {};
+
+/** Register cars from the latest snapshot with a freshly-created scene. */
+function registerKnownCars() {
+  if (!scene || !lastSnapshot) return;
+  const known = new Set(scene.carIds());
+  lastSnapshot.cars.forEach((car, i) => {
+    carNameById[car.id] = car.name;
+    if (!known.has(car.id)) {
+      carColorById[car.id] = scene.addCar(car.id, car.name, i);
+    }
+  });
+  ui.setCarColors(carColorById);
+}
 
 function onSnapshot(msg) {
   const now = performance.now();
@@ -28,15 +43,21 @@ function onSnapshot(msg) {
   buffer.push(msg, now);
   lastSnapshot = msg;
 
-  // register newly-joined cars with the scene (join order = array order)
-  const known = new Set(scene.carIds());
-  msg.cars.forEach((car, i) => {
-    carNameById[car.id] = car.name;
-    if (!known.has(car.id)) {
-      carColorById[car.id] = scene.addCar(car.id, car.name, i);
-      ui.setCarColors(carColorById);
-    }
-  });
+  // register newly-joined cars with the scene (join order = array order);
+  // the scene may not exist yet (track def still loading) — init() will
+  // register everyone from lastSnapshot once it does
+  if (scene) {
+    const known = new Set(scene.carIds());
+    msg.cars.forEach((car, i) => {
+      carNameById[car.id] = car.name;
+      if (!known.has(car.id)) {
+        carColorById[car.id] = scene.addCar(car.id, car.name, i);
+        ui.setCarColors(carColorById);
+      }
+    });
+  } else {
+    for (const car of msg.cars) carNameById[car.id] = car.name;
+  }
 
   // --- HUD / overlays (driven by the newest snapshot) ---
   ui.setPhase(msg.phase);
@@ -80,11 +101,15 @@ function frame() {
   scene.render();
 }
 
-function init(snapshotMsg) {
-  if (scene) return;
-  // The track comes from the server's hello (track info) — identical to the
-  // snapshot's, but hello always arrives first.
-  scene = createSpectatorScene(canvas, snapshotMsg.track);
+async function init(snapshotMsg) {
+  if (scene || sceneStarting) return;
+  sceneStarting = true;
+  // Resolve the visual track def from the server (fetch /tracks/<id>.json);
+  // falls back to the legacy ring for pre-MCPG-27 servers.
+  const def = await loadTrackDef(snapshotMsg.track);
+  scene = createSpectatorScene(canvas, snapshotMsg.track, def);
+  ui.setTrack(def.name);
+  registerKnownCars();
 }
 
 conn.addEventListener('hello', (ev) => {

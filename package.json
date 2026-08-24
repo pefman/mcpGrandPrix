@@ -10,7 +10,8 @@
     "demo": "node scripts/demo.js",
     "demo:public": "node scripts/demo.js --url https://gp.peterfrank.se/mcp --watch https://gp.peterfrank.se/",
     "agent": "node agents/run.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "visual": "node scripts/visualCheck.mjs"
   },
   "license": "MIT",
   "dependencies": {
@@ -19,6 +20,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "playwright": "^1.62.1",
     "vitest": "^4.1.9"
   }
 }

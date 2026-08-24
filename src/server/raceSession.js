@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { CONFIG } from '../config.js';
 import { DecisionLogger } from '../logging/decisionLogger.js';
 import { Simulation } from '../sim/simulation.js';
+import { Track } from '../track.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -25,6 +26,7 @@ export class RaceSession {
     tickSeconds = CONFIG.timing.tickSeconds,
     tickWallDelayMs = CONFIG.timing.tickWallDelayMs,
     seed = 1,
+    track = null, // optional Track instance (MCGP-27 track registry); defaults to the built-in ring
     logFile = null,
     logToStdout = true,
     delayFn = sleep,
@@ -39,6 +41,7 @@ export class RaceSession {
       reactiveWindowSeconds,
       tickSeconds,
       seed,
+      track: track ?? new Track(),
       onEvent: (event) => this.logger.log(event),
     });
     this._running = false;
