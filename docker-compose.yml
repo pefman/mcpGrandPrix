@@ -17,15 +17,20 @@ services:
     image: mcp-grand-prix:latest
     environment:
       PORT: "3080"
-      LAPS: "5"
-      WINDOW_SECONDS: "2"
-      TICK_DELAY_MS: "5"
-      SEED: "42"
+      # Game tuning uses ${VAR:-dev-default} so the VPS deploy (scripts/deploy.sh)
+      # can feed /opt/mcgp/.env via `docker compose --env-file` (production:
+      # LAPS=20, WINDOW_SECONDS=20, TICK_DELAY_MS=8). Local dev with no env file
+      # keeps the short dev defaults below.
+      LAPS: ${LAPS:-5}
+      WINDOW_SECONDS: ${WINDOW_SECONDS:-2}
+      TICK_DELAY_MS: ${TICK_DELAY_MS:-5}
+      SEED: ${SEED:-42}
       LOG_FILE: /logs/race.jsonl
     ports:
       - "3080:3080"
     volumes:
       - ./log:/logs
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || '3080') + '/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
@@ -60,3 +65,4 @@ services:
       - "8080:8080"
     depends_on:
       - server
+    restart: unless-stopped
