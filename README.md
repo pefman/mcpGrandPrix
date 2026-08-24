@@ -117,6 +117,10 @@ watching may be hibernated mid-race on a free tier. The first real host
 (Slice 3) should be chosen with that in mind; re-running after a cold start
 is cheap because the seeded race is deterministic.
 
+### VPS deploy (`scripts/deploy.sh`)
+
+Run from the agent host: `scripts/deploy.sh` (or `--dry-run` to print the planned actions without changing anything) — it compares the newest `main` SHA against the VPS's deployed SHA, redeploys if behind (or recovers an unhealthy stack), and health-checks the stack on the VPS before reporting; all knobs are env-overridable, see the script header.
+
 ## The hybrid game loop
 
 The race alternates between a **strategy window** and a **simulated lap**:
