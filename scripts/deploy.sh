@@ -22,9 +22,10 @@
 #                  HEALTH_TIMEOUT_S -> "RECOVERED <sha>", exit 0 | error, exit 1
 #   newest != deployed (or none deployed yet):
 #     1. `git fetch` + `reset --hard origin/main` on the VPS
-#     2. `docker compose up -d --build server client`  (restart policy comes
-#        from the compose file: unless-stopped. `agents` is deliberately NOT
-#        started — it is the ephemeral scripted-race runner.)
+#     2. `docker compose build` + `up -d server client` (Compose v2 has no
+#        `up --build` flag) — restart policy comes from the compose file:
+#        unless-stopped. `agents` is deliberately NOT started — it is the
+#        ephemeral scripted-race runner.
 #     3. health check within HEALTH_TIMEOUT_S
 #     ok    -> write newest SHA to $VPS_STATE_FILE, print "DEPLOYED <old> -> <new>", exit 0
 #     fail  -> restore the previous image + stack (if any), error, exit 1.
@@ -120,10 +121,13 @@ compose_env_flag() {
 # Bring the persistent stack up. $1: "build" = rebuild the image first
 # (redeploy); anything else = plain up with the existing image (recovery/rollback).
 compose_up() {
-  local build_flag="" env_flag
-  if [[ "$1" == "build" ]]; then build_flag="--build"; fi
+  local env_flag
   env_flag="$(compose_env_flag)"
-  vps "cd $VPS_APP_DIR && docker compose $env_flag $build_flag up -d $COMPOSE_SERVICES"
+  if [[ "$1" == "build" ]]; then
+    # Compose v2 has no `up --build` flag: build explicitly, then up.
+    vps "cd $VPS_APP_DIR && docker compose $env_flag build $COMPOSE_SERVICES"
+  fi
+  vps "cd $VPS_APP_DIR && docker compose $env_flag up -d $COMPOSE_SERVICES"
 }
 
 # Diagnostics on failure: container states + recent logs, for the report.
@@ -183,7 +187,7 @@ fi
 if [[ $DRY_RUN == 1 ]]; then
   log "DRY-RUN: VPS behind main (deployed: $old_display, newest: $new_sha); would:"
   log "  vps: git -C $VPS_APP_DIR fetch origin && git -C $VPS_APP_DIR reset --hard origin/main"
-  log "  vps: cd $VPS_APP_DIR && docker compose $(compose_env_flag) up -d --build $COMPOSE_SERVICES"
+  log "  vps: cd $VPS_APP_DIR && docker compose $(compose_env_flag) build $COMPOSE_SERVICES && docker compose $(compose_env_flag) up -d $COMPOSE_SERVICES"
   log "  vps: health check for <= ${HEALTH_TIMEOUT_S}s, then write '$new_sha' to $VPS_STATE_FILE"
   exit 0
 fi
