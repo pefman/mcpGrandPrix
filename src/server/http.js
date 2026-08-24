@@ -7,6 +7,8 @@
  *   GET    /mcp   SSE stream for server->client messages (session id required)
  *   DELETE /mcp   session termination (session id required)
  *   GET    /state current race state as JSON (spectator fallback, see below)
+ *   GET    /healthz 200 + race status (null before anyone joins, then race
+ *                   id + phase) — for container platform health checks
  *
  * Non-MCP GETs may serve static files (`staticDir` option) — used for the
  * spectator client (Slice 2). The spectator WebSocket (`/spectate`, see
@@ -46,6 +48,24 @@ export function createMcpHttpServer(session, { path = '/mcp', staticDir = null }
     try {
       const urlPath = req.url.split('?')[0].split('#')[0];
       if (urlPath !== path) {
+        if (urlPath === '/healthz' && req.method === 'GET') {
+          const state = session.state();
+          const race =
+            state.cars.length === 0
+              ? null // no race yet: nobody has joined
+              : {
+                  id: session.raceId,
+                  phase: state.phase,
+                  currentLap: state.currentLap,
+                  totalLaps: state.totalLaps,
+                };
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+          });
+          res.end(JSON.stringify({ ok: true, race }));
+          return;
+        }
         if (urlPath === '/state' && req.method === 'GET') {
           const state = session.state();
           state.finished = state.phase === 'finished';

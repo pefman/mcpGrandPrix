@@ -1,0 +1,62 @@
+# Local dev stack — reproduces `npm run race` end-to-end in containers:
+#
+#   docker compose up --build
+#
+# Spectate:   http://localhost:3080/                                   (served by the game server)
+#             http://localhost:8080/?server=http://localhost:3080      (client service, split deploy)
+# Watch:      docker compose logs -f agents server
+# Decision log: ./log/race.jsonl (rm it between runs; the server truncates it on start)
+#
+# The agents service joins the four scripted agents against the server
+# (sequentially, so a fixed seed stays deterministic) and exits when the
+# race ends; the server exits 0 right after the race completes.
+# `docker compose down` cleans everything up.
+services:
+  server:
+    build: .
+    image: mcp-grand-prix:latest
+    environment:
+      PORT: "3080"
+      LAPS: "5"
+      WINDOW_SECONDS: "2"
+      TICK_DELAY_MS: "5"
+      SEED: "42"
+      LOG_FILE: /logs/race.jsonl
+    ports:
+      - "3080:3080"
+    volumes:
+      - ./log:/logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || '3080') + '/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  agents:
+    image: mcp-grand-prix:latest
+    command: ["node", "scripts/runAgents.js"]
+    # the image-level HEALTHCHECK only makes sense for the server process
+    healthcheck:
+      disable: true
+    environment:
+      MCP_URL: http://server:3080/mcp
+      SEED: "42"
+      LOG_FILE: /logs/race.jsonl
+      WATCHDOG_MS: "180000"
+    volumes:
+      - ./log:/logs
+    depends_on:
+      server:
+        condition: service_healthy
+
+  # The same client/ build served standalone (split-deploy demo, e.g. for a
+  # Vercel static site pointed at a hosted game server).
+  client:
+    image: mcp-grand-prix:latest
+    command: ["node", "src/server/staticServe.js", "/app/client", "8080"]
+    healthcheck:
+      disable: true
+    ports:
+      - "8080:8080"
+    depends_on:
+      - server
