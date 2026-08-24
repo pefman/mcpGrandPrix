@@ -21,8 +21,8 @@ The orchestrator prints `Spectate in a browser: http://127.0.0.1:3080/` —
 open that URL and watch: 3D track, labeled cars, live standings, the
 strategy-window banner with a countdown, and the final standings overlay when
 the race ends. Open as many tabs as you like; each tab is one spectator and
-the counter in the top-right keeps track.
-
+the counter in the top-right keeps track. The same race also runs fully in
+containers — see *Docker* below.
 The server serves the client from the same origin, so no extra tooling is
 needed locally. For a split deployment (client on Vercel, game server on an
 always-on host), deploy the `client/` folder as a static site and point it at
@@ -37,8 +37,8 @@ npm install
 # run the acceptance race: 5 laps, 4 scripted agents, headless
 npm run race
 
-# run the test suite (54 tests: sim, strategies, MCP over HTTP, spectator,
-# static serving, end-to-end)
+# run the test suite (58 tests: sim, strategies, MCP over HTTP, spectator,
+# static serving, health endpoint, split-deploy static server, end-to-end)
 npm test
 
 # start a bare race server (MCP endpoint on http://127.0.0.1:3080/mcp)
@@ -57,6 +57,65 @@ Server options (CLI args or env): port `3080`, laps `20` (race uses 5),
 strategy window seconds `20` (race uses 2), tick wall delay `8`, seed `42`,
 decision log path. The same seed and the same join order produce the exact
 same race.
+
+## Docker (one image, any host)
+
+Everything runs from a single multi-stage image (`Dockerfile`,
+node:22-alpine, non-root user `node`): the game server with its MCP endpoint,
+spectator WebSocket, spectator client, and `GET /healthz` — all on one
+configurable port. One race per process: the container exits 0 a few seconds
+after the race finishes.
+
+```bash
+docker build -t mcp-grand-prix .
+
+# bare game server (agents join over MCP; the race auto-starts with 4)
+docker run --rm -p 3080:3080 mcp-grand-prix
+```
+
+### Full local race in containers (`docker compose`)
+
+```bash
+docker compose up --build
+```
+
+Reproduces `npm run race` end-to-end: the `server` service runs the game,
+the `agents` service joins the four scripted agents against it (sequentially,
+in the same order as `scripts/runRace.js`, so a fixed seed stays fully
+reproducible) and exits when the race ends, and the `client` service serves
+the same spectator build standalone on port 8080 (split-deploy demo).
+
+- Spectate: `http://localhost:3080/` (served by the game server) or
+  `http://localhost:8080/?server=http://localhost:3080` (client service)
+- Follow the race: `docker compose logs -f agents server`
+- Decision log: `./log/race.jsonl` (remove it between runs)
+- Same seed, join order and timing env → same standings as a bare
+  `npm run race` on the same machine.
+
+### Configuration (env vars)
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `PORT` | `3080` | HTTP port (MCP, spectator WS, static client, /state, /healthz) |
+| `LAPS` | `20` | race length in laps |
+| `WINDOW_SECONDS` | `20` | strategy window length (s) |
+| `TICK_DELAY_MS` | `8` | wall delay between sim ticks (0 = max speed) |
+| `SEED` | `42` | deterministic seed (same seed + same join order = same race) |
+| `LOG_FILE` | stdout only | decision log path (the compose stack uses `/logs/race.jsonl`, mounted at `./log/`) |
+
+For bare local runs, the CLI args to `node src/server/main.js`
+(port, laps, window s, tick delay ms, seed, log file) override the env vars.
+
+### Hosting notes (free tier)
+
+The server idles in the `setup` phase until four agents join, then runs one
+race of a few minutes and exits 0 — a good fit for "scale to zero" platforms.
+Free tiers sleep idle instances, and the server has no *outbound* keep-alive
+(inbound spectator pings only, see *Spectator client*) — so a race with a
+connected spectator keeps the instance awake, while a race with nobody
+watching may be hibernated mid-race on a free tier. The first real host
+(Slice 3) should be chosen with that in mind; re-running after a cold start
+is cheap because the seeded race is deterministic.
 
 ## The hybrid game loop
 
@@ -120,10 +179,12 @@ Slice 3; there is no `vercel.json` yet.)
 
 On `phase: 'finished'` the server sends exactly one final snapshot, then goes
 quiet but keeps connections open for the results screen; the client stops
-reconnecting once it has seen it. The server process exits right after the
-race (by design, it is one race per process): the final snapshot is flushed
-synchronously before `race_complete` is printed, so it lands even when the
-`npm run race` orchestrator kills the server. A plain `GET /state` HTTP
+reconnecting once it has seen it. The server process exits a few seconds
+after the race (by design, it is one race per process): the final snapshot is
+flushed synchronously before `race_complete` is printed, so it lands even
+when the `npm run race` orchestrator kills the server, and the server then
+stays up for a post-race grace period so browsers and orchestrators can still
+fetch the final results. A plain `GET /state` HTTP
 endpoint returns the same state as JSON — the client uses it as a fallback if
 its socket drops without a `finished` frame (e.g. the host went to sleep),
 and `2+ spectators` remain stable through a full race because each tab is an
@@ -150,19 +211,25 @@ src/
   sim/strategies.js      the four scripted agent profiles (pure functions)
   logging/decisionLogger.js  JSONL append-only decision log
   server/main.js         CLI entry point (node src/server/main.js)
-  server/http.js         HTTP server: MCP endpoint, GET /state, static files
+  server/http.js         HTTP server: MCP endpoint, GET /state, GET /healthz,
+                         static files
   server/mcpServer.js    the MCP tool surface (one per session)
   server/raceSession.js  real-time owner: walls the clock, ticks the sim
   server/spectator.js    the spectator WebSocket hub (hello, 10 Hz snapshots,
                          keep-alive ping/pong, exactly-once final snapshot)
   server/staticFiles.js  minimal static file server for the client folder
+  server/staticServe.js  standalone static server for split deploys (Docker
+                         `client` service, Vercel)
 client/                  Three.js spectator client (index.html, js/, vendor/)
 agents/
   agentBase.js           MCP client loop: join, poll, submit once per lap
   run.js                 standalone agent process (npm run agent)
 scripts/runRace.js       `npm run race` orchestrator (server + 4 agents)
+scripts/runAgents.js     agents-only orchestrator for the Docker stack
+Dockerfile               multi-stage, non-root image (server, agents, client)
+docker-compose.yml       local stack: server + scripted-agent race + client
 test/                    Vitest: sim, strategies, MCP over HTTP, end-to-end
-log/                     decision logs (gitignored)
+log/                     decision logs (gitignored, .gitkeep keeps it for Docker)
 ```
 
 ## Decision log
@@ -196,7 +263,10 @@ spectator in Slice 2) will care about.
   class (Node's built-in WebSocket) surviving a forced mid-race drop and
   reporting the end via `GET /state`.
 - `test/static.test.js` — the static file server: the client page and its
-  assets, `GET /state` JSON, path-traversal rejection, 404 for unknown paths.
+  assets, `GET /state` JSON, `GET /healthz` (no race → race status with id +
+  phase after an agent joins), path-traversal rejection, 404 for unknown paths.
+- `test/staticServe.test.js` — the standalone static server for split
+  deployments (same files, same 404 shape).
 
 All tests are deterministic (seeded RNG, `tickWallDelayMs: 0`, immediate
 window closes) and run in ~10 s.

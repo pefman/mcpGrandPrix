@@ -9,6 +9,7 @@
  * Tests can pass `delayMs: 0` and `strategyWindowSeconds: 0` to run a full
  * race as fast as the event loop allows.
  */
+import { randomUUID } from 'node:crypto';
 import { CONFIG } from '../config.js';
 import { DecisionLogger } from '../logging/decisionLogger.js';
 import { Simulation } from '../sim/simulation.js';
@@ -27,6 +28,7 @@ export class RaceSession {
     delayFn = sleep,
   } = {}) {
     this.logger = new DecisionLogger({ file: logFile, stdout: logToStdout });
+    this.raceId = randomUUID(); // identifies this server instance's race (GET /healthz)
     this.tickWallDelayMs = tickWallDelayMs;
     this.delayFn = delayFn;
     this.sim = new Simulation({

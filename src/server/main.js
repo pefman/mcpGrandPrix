@@ -18,6 +18,11 @@ import { createSpectatorHub, SPECTATE_PATH } from './spectator.js';
 
 const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client');
 
+// After the race ends, keep accepting connections for a few seconds so
+// spectators and orchestrators (e.g. the Docker agents service polling
+// GET /state) can fetch the final standings before the container exits.
+const POST_RACE_GRACE_MS = 3000;
+
 const [
   ,
   ,
@@ -59,8 +64,9 @@ server.listen(Number(portArg), () => {
       // now are flushed to the sockets while the process is alive.
       spectator.finalize();
       console.log(JSON.stringify({ type: 'race_complete', standings: session.standings() }));
-      // Extra margin so browsers receive the final frame before teardown.
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      // Post-race grace: final frames already flushed above; stay up so the
+      // final state remains fetchable (see POST_RACE_GRACE_MS).
+      await new Promise((resolve) => setTimeout(resolve, POST_RACE_GRACE_MS));
       session.close();
       spectator.close();
       server.close(() => process.exit(0));

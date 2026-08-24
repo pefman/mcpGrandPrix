@@ -11,6 +11,7 @@ import { RaceSession } from '../src/server/raceSession.js';
 const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../client');
 
 let server;
+let session;
 let baseUrl;
 
 function get(urlPath, { method = 'GET', expectBody = true } = {}) {
@@ -21,7 +22,7 @@ function get(urlPath, { method = 'GET', expectBody = true } = {}) {
 }
 
 beforeAll(async () => {
-  const session = new RaceSession({ totalLaps: 5, logToStdout: false });
+  session = new RaceSession({ totalLaps: 5, logToStdout: false });
   server = createMcpHttpServer(session, { staticDir: clientDir });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -97,5 +98,29 @@ describe('static serving of the spectator client', () => {
     // Streamable HTTP answers initialize with a session; whatever it is,
     // it must not be a static 404 and must not leak client files.
     expect(res.status).not.toBe(404);
+  });
+});
+
+describe('GET /healthz (container platform health check)', () => {
+  it('200 with no race before anyone joins', async () => {
+    const res = await get('/healthz');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.race).toBeNull();
+  });
+
+  it('200 with race id + phase once an agent has joined', async () => {
+    session.addAgent('HealthCheckCar', 'test');
+    const res = await get('/healthz');
+    expect(res.status).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.race).not.toBeNull();
+    expect(body.race.id).toHaveLength(36); // UUID v4
+    expect(body.race.phase).toBe('setup');
+    expect(body.race.currentLap).toBe(0);
+    expect(body.race.totalLaps).toBe(5);
   });
 });
