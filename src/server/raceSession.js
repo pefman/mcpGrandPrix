@@ -3,11 +3,12 @@
  *
  * - Owns the DecisionLogger and forwards every simulation event to it.
  * - Runs the hybrid loop: strategy window (wall clock) -> simulation ticks
- *   (wall-clock paced so multiple agents can act while a lap is "running").
+ *   (wall-clock paced so multiple agents can act while a lap is "running")
+ *   -> reactive windows (wall clock, affected cars only) when triggers fire.
  * - Auto-starts the race once at least minAgents have joined.
  *
- * Tests can pass `delayMs: 0` and `strategyWindowSeconds: 0` to run a full
- * race as fast as the event loop allows.
+ * Tests can pass `strategyWindowSeconds: 0` / `reactiveWindowSeconds: 0` and
+ * a fast `delayFn` to run a full race as fast as the event loop allows.
  */
 import { randomUUID } from 'node:crypto';
 import { CONFIG } from '../config.js';
@@ -20,6 +21,7 @@ export class RaceSession {
   constructor({
     totalLaps,
     strategyWindowSeconds = CONFIG.timing.strategyWindowSeconds,
+    reactiveWindowSeconds = CONFIG.timing.reactiveWindowSeconds,
     tickSeconds = CONFIG.timing.tickSeconds,
     tickWallDelayMs = CONFIG.timing.tickWallDelayMs,
     seed = 1,
@@ -34,6 +36,7 @@ export class RaceSession {
     this.sim = new Simulation({
       totalLaps,
       strategyWindowSeconds,
+      reactiveWindowSeconds,
       tickSeconds,
       seed,
       onEvent: (event) => this.logger.log(event),
@@ -53,6 +56,11 @@ export class RaceSession {
   /** Close the open strategy window and start simulating the lap. */
   closeWindow() {
     this.sim.closeWindow();
+  }
+
+  /** Close the open reactive window and resume simulation. */
+  closeReactiveWindow() {
+    return this.sim.closeReactiveWindow();
   }
 
   /** Advance the simulation by one tick (no-op outside the simulation phase). */
@@ -102,6 +110,12 @@ export class RaceSession {
         } else if (this.sim.phase === 'strategy_window') {
           if (this.sim.windowRemainingS() <= 0) {
             this.closeWindow();
+          } else {
+            await this.delayFn(25);
+          }
+        } else if (this.sim.phase === 'reactive_window') {
+          if (this.sim.reactiveWindowRemainingS() <= 0) {
+            this.closeReactiveWindow();
           } else {
             await this.delayFn(25);
           }

@@ -37,6 +37,7 @@ try {
     name,
     serverUrl,
     decide: agent.decide,
+    decideReactive: agent.decideReactive,
     rng,
     pollMs: 150,
     logFile,

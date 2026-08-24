@@ -22,8 +22,19 @@ export const CONFIG = {
 
   timing: {
     strategyWindowSeconds: 20, // real-time length of each strategy window (spec: 15-25)
+    reactiveWindowSeconds: 10, // real-time length of a reactive window (spec: 8-15)
     tickSeconds: 0.25, // race-time step between simulation ticks
     tickWallDelayMs: 8, // real-time delay per tick so windows can overlap laps
+  },
+
+  reactive: {
+    // Close battle fires when the gap is this tight AND the car behind is faster.
+    // Kept at/under overtaking.opportunityDistanceM so every battle is also an
+    // overtake opportunity; the reactive window replaces the immediate roll.
+    closeBattleGapM: 30,
+    criticalTireWearPct: 80, // open a window when wear crosses this (once per stint)
+    pitOpportunityWearPct: 55, // strategy-driven mid-stint pit offer (once per lap)
+    maxWindowsPerLap: 4, // hard cap so a messy battle does not stall the race
   },
 
   physics: {

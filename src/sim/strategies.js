@@ -6,6 +6,9 @@
  * where stateView is the car's public snapshot plus a few race facts.
  * These same functions drive the agents in `agents/` when the server runs,
  * and can be unit-tested directly.
+ *
+ * Reactive policies (`*Reactive`) answer Slice 3 reactive windows with a
+ * small action set: attack | defend | hold | pit_now.
  */
 import { CONFIG } from '../config.js';
 
@@ -13,6 +16,16 @@ const FUEL = CONFIG.fuel;
 const burn = (pace) => FUEL.perLapNormalKg * FUEL.paceFactors[pace];
 /** Pit when the current tank cannot carry the car to the finish. */
 const outOfFuelRange = (fuelKg, lapsRemaining, pace) => fuelKg <= lapsRemaining * burn(pace);
+
+/**
+ * Shared reactive helper: pick a legal action for this car's role in the window.
+ * `prefer` is tried first when allowed; otherwise the first allowed action.
+ */
+function pickReactive(window, carId, prefer) {
+  const allowed = window.allowedByCar?.[String(carId)] ?? window.allowedByCar?.[carId] ?? ['hold'];
+  if (prefer && allowed.includes(prefer)) return { type: prefer };
+  return { type: allowed[0] ?? 'hold' };
+}
 
 /**
  * AGGRESSIVE — wants to be first. Pushes pace, attacks hard, pits only when
@@ -80,9 +93,56 @@ export function randomStrategy(view, rng) {
   };
 }
 
+function roleOf(window, carId) {
+  return window.roles?.[carId] ?? window.roles?.[String(carId)] ?? null;
+}
+
+/** Aggressive: attack hard, defend hard, refuse early pits unless critical. */
+export function aggressiveReactive(view, window, _rng) {
+  const role = roleOf(window, view.car.id);
+  if (window.trigger === 'close_battle') {
+    if (role === 'attacker') return pickReactive(window, view.car.id, 'attack');
+    if (role === 'defender') return pickReactive(window, view.car.id, 'defend');
+  }
+  if (window.trigger === 'critical_tire_wear') return pickReactive(window, view.car.id, 'pit_now');
+  // pit_opportunity: stay out and push
+  return pickReactive(window, view.car.id, 'hold');
+}
+
+/** Conservative: yield fights, pit at the first opportunity. */
+export function conservativeReactive(view, window, _rng) {
+  if (window.trigger === 'close_battle') {
+    // Never escalate: hold as attacker, hold (yield) as defender.
+    return pickReactive(window, view.car.id, 'hold');
+  }
+  if (window.trigger === 'critical_tire_wear' || window.trigger === 'pit_opportunity') {
+    return pickReactive(window, view.car.id, 'pit_now');
+  }
+  return pickReactive(window, view.car.id, 'hold');
+}
+
+/** Pit-heavy: always take the box when offered; otherwise hold. */
+export function pitHeavyReactive(view, window, _rng) {
+  if (window.trigger === 'critical_tire_wear' || window.trigger === 'pit_opportunity') {
+    return pickReactive(window, view.car.id, 'pit_now');
+  }
+  return pickReactive(window, view.car.id, 'hold');
+}
+
+/** Random: uniform pick among the actions allowed for this car. */
+export function randomReactive(view, window, rng) {
+  const allowed =
+    window.allowedByCar?.[String(view.car.id)] ?? window.allowedByCar?.[view.car.id] ?? ['hold'];
+  return { type: rng.pick(allowed) };
+}
+
 export const SCRIPTED_AGENTS = {
-  aggressive: { profile: 'aggressive', decide: aggressiveStrategy },
-  conservative: { profile: 'conservative', decide: conservativeStrategy },
-  pitHeavy: { profile: 'pitHeavy', decide: pitHeavyStrategy },
-  random: { profile: 'random', decide: randomStrategy },
+  aggressive: { profile: 'aggressive', decide: aggressiveStrategy, decideReactive: aggressiveReactive },
+  conservative: {
+    profile: 'conservative',
+    decide: conservativeStrategy,
+    decideReactive: conservativeReactive,
+  },
+  pitHeavy: { profile: 'pitHeavy', decide: pitHeavyStrategy, decideReactive: pitHeavyReactive },
+  random: { profile: 'random', decide: randomStrategy, decideReactive: randomReactive },
 };

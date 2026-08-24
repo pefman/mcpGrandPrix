@@ -1,7 +1,7 @@
 /**
  * The race simulation. 100% deterministic given a seed and a sequence of
- * inputs (strategies, ticks). No wall clock, no I/O — the RaceSession and
- * the HTTP layer own time and logging.
+ * inputs (strategies, ticks, reactive actions). No wall clock, no I/O — the
+ * RaceSession and the HTTP layer own time and logging.
  *
  * Loop per lap:
  *   1. strategy window: each car may submit exactly one strategy packet
@@ -9,18 +9,30 @@
  *   2. simulation: the server ticks the lap forward until every running car
  *      has crossed the line, applying pace, tire wear, fuel, traffic drag
  *      and probabilistic overtaking.
+ *   3. reactive window (Slice 3): when a trigger fires mid-lap, simulation
+ *      pauses; only the affected cars may submit one reactive action. No
+ *      response by timeout = no action. Outcome feeds the sim, then ticks resume.
  */
 import { CONFIG } from '../config.js';
 import { Track } from '../track.js';
 import { carSnapshot, createCar, defaultStrategy, parseStrategy } from './car.js';
 import { createRng } from '../rng.js';
+import {
+  allowedActionsFor,
+  createReactiveWindow,
+  detectTrigger,
+  parseReactiveAction,
+  reactiveWindowRemainingS,
+  resolveCloseBattle,
+} from './reactive.js';
 
-export const PHASES = ['setup', 'strategy_window', 'simulation', 'finished'];
+export const PHASES = ['setup', 'strategy_window', 'simulation', 'reactive_window', 'finished'];
 
 export class Simulation {
   constructor({
     totalLaps = CONFIG.race.totalLaps,
     strategyWindowSeconds = CONFIG.timing.strategyWindowSeconds,
+    reactiveWindowSeconds = CONFIG.timing.reactiveWindowSeconds,
     tickSeconds = CONFIG.timing.tickSeconds,
     seed = 1,
     track = new Track(),
@@ -29,6 +41,7 @@ export class Simulation {
     if (!Number.isInteger(totalLaps) || totalLaps < 1) throw new Error('totalLaps must be a positive integer');
     this.totalLaps = totalLaps;
     this.strategyWindowSeconds = strategyWindowSeconds;
+    this.reactiveWindowSeconds = reactiveWindowSeconds;
     this.tickSeconds = tickSeconds;
     this.track = track;
     this.rng = createRng(seed);
@@ -40,6 +53,12 @@ export class Simulation {
     this.windowOpensAtMs = 0;
     this._overdueCooldowns = new Map(); // `${behindId}|${aheadId}` -> last attempt raceTime
     this._results = []; // finished/retired order
+
+    this.reactiveWindow = null; // active reactive window, or null
+    this._nextReactiveId = 1;
+    this._tireAlerted = new Set(); // carIds that already got critical_tire_wear this stint
+    this._pitAlertedThisLap = new Set(); // carIds offered pit_opportunity this lap
+    this._reactiveWindowsThisLap = 0;
   }
 
   // ---------------------------------------------------------------- agents
@@ -77,10 +96,13 @@ export class Simulation {
   /** Opens the strategy window for `lapNumber` (1-based). */
   openStrategyWindow(lapNumber) {
     if (this.phase === 'finished') throw new Error('race is finished');
+    if (this.phase === 'reactive_window') throw new Error('cannot open strategy window during a reactive window');
     this.phase = 'strategy_window';
     this.currentLap = lapNumber;
     this.windowOpensAtMs = Date.now();
     for (const car of this.cars) car.submittedStrategy = false;
+    this._pitAlertedThisLap = new Set();
+    this._reactiveWindowsThisLap = 0;
     this._emit('window_opened', {
       lap: lapNumber,
       remainingS: this.strategyWindowSeconds,
@@ -131,16 +153,139 @@ export class Simulation {
     return { accepted: true, carId: car.id };
   }
 
+  /** Seconds left in the current reactive window (wall-clock based). */
+  reactiveWindowRemainingS() {
+    if (this.phase !== 'reactive_window' || !this.reactiveWindow) return 0;
+    return reactiveWindowRemainingS(this.reactiveWindow);
+  }
+
+  /** Test helper: pretend the reactive window has elapsed. */
+  forceCloseReactiveWindow() {
+    if (this.phase === 'reactive_window' && this.reactiveWindow) {
+      this.reactiveWindow.opensAtMs = 0;
+    }
+  }
+
   /**
-   * Reactive window actions (close battles, weather, safety car, critical
-   * tire wear, pit opportunities). Slice 1: reactive windows are not yet
-   * implemented — every submission is rejected cleanly so agents can call
-   * the tool safely (idempotent no-op).
+   * Submit a reactive action for the open reactive window.
+   * First valid submission per (carId, windowId) wins; duplicates rejected.
+   * Cars not listed on the window are rejected. Idempotent no-op on reject.
    */
-  submitReactiveAction(carId, _action) {
+  submitReactiveAction(carId, raw) {
     const car = this.carById(carId);
     if (!car) return { accepted: false, error: 'unknown_car' };
-    return { accepted: false, error: 'reactive_windows_not_yet_available' };
+    if (this.phase !== 'reactive_window' || !this.reactiveWindow) {
+      return { accepted: false, error: 'no_reactive_window' };
+    }
+    const window = this.reactiveWindow;
+    if (!window.carIds.includes(carId)) {
+      return { accepted: false, error: 'car_not_in_window' };
+    }
+    if (window.actions.has(carId)) {
+      return { accepted: false, error: 'duplicate_action', details: ['action for this window was already submitted'] };
+    }
+    if (car.status === 'RETIRED' || car.status === 'FINISHED') {
+      return { accepted: false, error: 'car_not_active' };
+    }
+
+    const role = window.roles[carId] ?? 'subject';
+    const allowed = allowedActionsFor(window.trigger, role);
+    const { action, errors } = parseReactiveAction(raw, allowed);
+    if (errors.length) return { accepted: false, error: 'invalid_action', details: errors };
+
+    window.actions.set(carId, action);
+    this._emit('reactive_action_submitted', {
+      windowId: window.id,
+      trigger: window.trigger,
+      carId: car.id,
+      name: car.name,
+      action: { ...action },
+    });
+    return { accepted: true, carId: car.id, windowId: window.id, action };
+  }
+
+  /**
+   * Open a reactive window from a detected trigger candidate. Pauses simulation.
+   * @returns {boolean} true if a window was opened
+   */
+  openReactiveWindow(candidate) {
+    if (this.phase !== 'simulation') return false;
+    if (this.reactiveWindow) return false;
+    if (this._reactiveWindowsThisLap >= CONFIG.reactive.maxWindowsPerLap) return false;
+
+    const window = createReactiveWindow({
+      id: this._nextReactiveId++,
+      trigger: candidate.trigger,
+      carIds: candidate.carIds,
+      roles: candidate.roles,
+      detail: candidate.detail,
+      windowSeconds: this.reactiveWindowSeconds,
+      pending: candidate.pending,
+    });
+
+    // Mark cooldowns / alert flags so the same trigger does not re-fire immediately.
+    if (candidate.trigger === 'close_battle' && candidate.pending?.pairKey) {
+      this._overdueCooldowns.set(candidate.pending.pairKey, this.raceTimeS);
+    }
+    if (candidate.trigger === 'critical_tire_wear') {
+      for (const id of candidate.carIds) this._tireAlerted.add(id);
+    }
+    if (candidate.trigger === 'pit_opportunity') {
+      for (const id of candidate.carIds) this._pitAlertedThisLap.add(id);
+    }
+
+    this.reactiveWindow = window;
+    this._reactiveWindowsThisLap += 1;
+    this.phase = 'reactive_window';
+    this._emit('reactive_window_opened', {
+      windowId: window.id,
+      trigger: window.trigger,
+      carIds: window.carIds,
+      remainingS: window.windowSeconds,
+      detail: window.detail,
+      allowedByCar: Object.fromEntries(
+        window.carIds.map((id) => [id, allowedActionsFor(window.trigger, window.roles[id])]),
+      ),
+    });
+    return true;
+  }
+
+  /**
+   * Close the reactive window: default missing actions to hold, apply outcome,
+   * resume simulation.
+   */
+  closeReactiveWindow() {
+    if (this.phase !== 'reactive_window' || !this.reactiveWindow) {
+      throw new Error(`no reactive window open (phase '${this.phase}')`);
+    }
+    const window = this.reactiveWindow;
+
+    for (const carId of window.carIds) {
+      if (!window.actions.has(carId)) {
+        const car = this.carById(carId);
+        window.actions.set(carId, { type: 'hold' });
+        this._emit('reactive_action_defaulted', {
+          windowId: window.id,
+          trigger: window.trigger,
+          carId,
+          name: car?.name ?? null,
+          action: { type: 'hold' },
+        });
+      }
+    }
+
+    const outcome = this._applyReactiveOutcome(window);
+    this._emit('reactive_window_closed', {
+      windowId: window.id,
+      trigger: window.trigger,
+      carIds: window.carIds,
+      actions: Object.fromEntries([...window.actions.entries()].map(([id, a]) => [id, a])),
+      outcome,
+    });
+
+    this.reactiveWindow = null;
+    this.phase = 'simulation';
+    return outcome;
   }
 
   /** Called when the strategy window times out: cars without a submission
@@ -185,6 +330,7 @@ export class Simulation {
           car.pitTimeLeftS = 0;
           car.tireWear = 0;
           car.fuelKg = CONFIG.fuel.startKg;
+          this._tireAlerted.delete(car.id); // fresh stint → critical wear can fire again
           this._emit('pit_stop_complete', { carId: car.id, name: car.name });
         }
       } else if (car.status === 'RUNNING' && car.pitRequested && this.currentLap < this.totalLaps) {
@@ -227,41 +373,24 @@ export class Simulation {
       car.position = this.track.lapPosition(car.distTraveled);
     }
 
-    // 4) overtaking (only among running, non-pitting cars)
-    for (let i = 0; i + 1 < running.length; i++) {
-      const ahead = running[i];
-      const behind = running[i + 1];
-      if (ahead.status !== 'RUNNING' || behind.status !== 'RUNNING') continue;
-      const gap = ahead.distTraveled - behind.distTraveled;
-      if (gap > CONFIG.overtaking.opportunityDistanceM) continue;
-
-      const key = `${behind.id}|${ahead.id}`;
-      const lastAttempt = this._overdueCooldowns.get(key) ?? -Infinity;
-      if (this.raceTimeS - lastAttempt < CONFIG.overtaking.cooldownTicks * this.tickSeconds) continue;
-      if (behind.speedMs <= ahead.speedMs) continue;
-
-      this._overdueCooldowns.set(key, this.raceTimeS);
-      const dv = behind.speedMs - ahead.speedMs;
-      let p =
-        CONFIG.overtaking.baseProbability +
-        CONFIG.overtaking.speedDeltaCoefficient * (dv / ahead.speedMs) +
-        CONFIG.overtaking.attackBonus * behind.strategy.aggression -
-        CONFIG.overtaking.defendPenalty * ahead.strategy.defend;
-      p = Math.min(CONFIG.overtaking.maxProbability, Math.max(CONFIG.overtaking.minProbability, p));
-
-      if (this.rng.chance(p)) {
-        // overtake succeeds: behind jumps 1 m ahead of the car passed
-        behind.distTraveled = ahead.distTraveled + 1;
-        behind.position = this.track.lapPosition(behind.distTraveled);
-        this._emit('overtake', {
-          carId: behind.id,
-          name: behind.name,
-          overTakenCarId: ahead.id,
-          overTakenName: ahead.name,
-          probability: Math.round(p * 1000) / 1000,
-        });
-        overtakeEvents.push({ by: behind.name, on: ahead.name });
-      }
+    // 4) triggers → reactive windows. Close battles replace the immediate
+    //    overtake roll; tire/pit triggers open a window for the affected car.
+    //    At most one window opens per tick; the race pauses until it closes.
+    const candidate = detectTrigger({
+      running,
+      raceTimeS: this.raceTimeS,
+      tickSeconds: this.tickSeconds,
+      overtakeCooldowns: this._overdueCooldowns,
+      tireAlerted: this._tireAlerted,
+      pitAlertedThisLap: this._pitAlertedThisLap,
+      currentLap: this.currentLap,
+      totalLaps: this.totalLaps,
+    });
+    if (candidate && this.openReactiveWindow(candidate)) {
+      // Clock still advances for this tick (movement already applied); the
+      // RaceSession will wait out the reactive window before the next tick.
+      this.raceTimeS += dt;
+      return { overtakes: overtakeEvents, laps: lapEvents, finishes: 0, reactiveOpened: true };
     }
 
     // 5) clock, lap transition + end conditions.
@@ -278,6 +407,63 @@ export class Simulation {
     }
 
     return { overtakes: overtakeEvents, laps: lapEvents, finishes: 0 };
+  }
+
+  /**
+   * Apply the outcome of a closed reactive window to race state.
+   * close_battle → resolve the pending overtake; tire/pit → optional pit request.
+   */
+  _applyReactiveOutcome(window) {
+    if (window.trigger === 'close_battle' && window.pending) {
+      const pending = window.pending;
+      const result = resolveCloseBattle(pending, window.actions, this.rng);
+      const behind = this.carById(pending.behindId);
+      const ahead = this.carById(pending.aheadId);
+      if (result.success && behind && ahead && behind.status === 'RUNNING' && ahead.status === 'RUNNING') {
+        behind.distTraveled = ahead.distTraveled + 1;
+        behind.position = this.track.lapPosition(behind.distTraveled);
+        this._emit('overtake', {
+          carId: behind.id,
+          name: behind.name,
+          overTakenCarId: ahead.id,
+          overTakenName: ahead.name,
+          probability: result.probability,
+          via: 'reactive',
+          windowId: window.id,
+        });
+      } else {
+        this._emit('overtake_failed', {
+          carId: behind?.id ?? pending.behindId,
+          name: behind?.name ?? null,
+          defendedByCarId: ahead?.id ?? pending.aheadId,
+          defendedByName: ahead?.name ?? null,
+          probability: result.probability,
+          via: 'reactive',
+          windowId: window.id,
+        });
+      }
+      return {
+        type: 'close_battle',
+        success: result.success,
+        probability: result.probability,
+        behindAction: result.behindAction,
+        aheadAction: result.aheadAction,
+      };
+    }
+
+    // critical_tire_wear / pit_opportunity: pit_now sets the pit flag for the next tick.
+    const pitCars = [];
+    for (const carId of window.carIds) {
+      const action = window.actions.get(carId);
+      if (action?.type === 'pit_now') {
+        const car = this.carById(carId);
+        if (car && car.status === 'RUNNING' && this.currentLap < this.totalLaps) {
+          car.pitRequested = true;
+          pitCars.push(carId);
+        }
+      }
+    }
+    return { type: window.trigger, pitRequestedCarIds: pitCars };
   }
 
   _onLapComplete(car, laps) {
@@ -337,9 +523,29 @@ export class Simulation {
       raceTimeS: Math.round(this.raceTimeS * 100) / 100,
       strategyWindowSeconds: this.strategyWindowSeconds,
       windowRemainingS: Math.round(this.windowRemainingS() * 100) / 100,
+      reactiveWindowSeconds: this.reactiveWindowSeconds,
+      reactiveWindow: this._reactiveWindowView(),
       track: this.track.info(),
       cars,
       standings,
+    };
+  }
+
+  /** Public view of the open reactive window (null when none). */
+  _reactiveWindowView() {
+    if (this.phase !== 'reactive_window' || !this.reactiveWindow) return null;
+    const w = this.reactiveWindow;
+    return {
+      id: w.id,
+      trigger: w.trigger,
+      carIds: [...w.carIds],
+      roles: { ...w.roles },
+      detail: { ...w.detail },
+      remainingS: Math.round(reactiveWindowRemainingS(w) * 100) / 100,
+      submittedCarIds: [...w.actions.keys()],
+      allowedByCar: Object.fromEntries(
+        w.carIds.map((id) => [id, allowedActionsFor(w.trigger, w.roles[id])]),
+      ),
     };
   }
 

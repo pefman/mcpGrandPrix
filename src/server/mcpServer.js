@@ -8,8 +8,8 @@
  *  - get_* tools: pure reads, safe to repeat.
  *  - submit_phase_strategy: first valid packet per window wins; repeats are
  *    rejected as duplicates and never change state.
- *  - submit_reactive_action: stub in Slice 1 — always rejected, no state
- *    change, safe to retry.
+ *  - submit_reactive_action: first valid action per (carId, windowId) wins;
+ *    duplicates / wrong-car / closed-window are rejected with no state change.
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -117,12 +117,15 @@ export function createMcpServer(session) {
     {
       title: 'Submit reactive action',
       description:
-        'React to a short reactive window opened by a trigger event (close battle, weather, safety car, critical ' +
-        'tire wear, pit opportunity). Reactive windows arrive in Slice 3; in Slice 1 every submission is rejected ' +
-        'with reactive_windows_not_yet_available and no state changes — safe to call (idempotent no-op).',
+        'React to a short reactive window (8–15 s) opened for your car by a trigger event. ' +
+        'Check get_race_state().reactiveWindow: it lists trigger, carIds, remainingS, and allowedByCar. ' +
+        'Triggers (MVP): close_battle (attack|defend|hold by role), critical_tire_wear (pit_now|hold), ' +
+        'pit_opportunity (pit_now|hold). No response by timeout = hold (no action). ' +
+        'Idempotent: first valid action per window wins; duplicates rejected as duplicate_action; ' +
+        'calls outside a window or for a car not listed return an error and change nothing.',
       inputSchema: {
         carId: z.number().int().positive(),
-        type: z.string().min(1),
+        type: z.enum(['attack', 'defend', 'hold', 'pit_now']),
         detail: z.string().max(500).optional(),
       },
     },

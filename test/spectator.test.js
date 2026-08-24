@@ -64,6 +64,7 @@ beforeAll(async () => {
   session = new RaceSession({
     totalLaps: TOTAL_LAPS,
     strategyWindowSeconds: WINDOW_SECONDS,
+    reactiveWindowSeconds: WINDOW_SECONDS,
     tickWallDelayMs: 0,
     seed: 42,
     logFile,
@@ -130,6 +131,7 @@ beforeAll(async () => {
         name: a.name,
         serverUrl: baseUrl,
         decide: SCRIPTED_AGENTS[a.profile].decide,
+        decideReactive: SCRIPTED_AGENTS[a.profile].decideReactive,
         rng: createRng(a.seed),
         pollMs: 100,
       }),
