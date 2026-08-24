@@ -24,7 +24,12 @@ html, body {
   font-size: 13px;
 }
 
-#scene { position: fixed; inset: 0; display: block; }
+#scene {
+  position: fixed;
+  inset: 0;
+  display: block;
+  image-rendering: pixelated; /* chunky pixels: the renderer draws into a 1/4-res buffer (MCPG-27) */
+}
 
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
@@ -58,6 +63,13 @@ html, body {
 .phase-finished { background: rgba(176, 124, 255, 0.2); color: var(--purple); }
 .phase-reactive_window { background: rgba(255, 176, 32, 0.2); color: var(--amber); }
 
+#track-line {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 6px;
+}
 #lap-line { font-size: 15px; font-weight: 700; letter-spacing: 0.05em; }
 #clock-line { color: var(--muted); font-size: 12px; margin-top: 2px; }
 

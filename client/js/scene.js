@@ -1,7 +1,11 @@
 /**
- * Three.js scene: camera fit to the track, lights, car meshes.
- * Cars are identified by server car id; transforms come from the
- * interpolated (lap, s) stream — the scene itself is dumb.
+ * Spectator scene (MCPG-27 rewrite).
+ *
+ * One fixed orthographic camera — soft 3/4 view from the south, fitted
+ * once to the track's bounding box. No pan, no zoom, no follow-cam.
+ * The renderer draws into a quarter-resolution buffer that CSS upscales
+ * with `image-rendering: pixelated`: chunky pixels, no antialiasing.
+ * Background, fog and lights come from the track theme.
  */
 import * as THREE from 'three';
 import { buildTrack } from './track.js';
@@ -10,6 +14,10 @@ export const CAR_COLORS = [
   '#ff3b30', '#ff9500', '#ffd60a', '#34c759',
   '#0a84ff', '#af52de', '#ff2d55', '#e5e5ea',
 ];
+
+const PIXEL_SCALE = 4; // buffer = 1/PIXEL_SCALE of the CSS size
+const ELEVATION = THREE.MathUtils.degToRad(35);
+const FIT_MARGIN = 1.05;
 
 /** One car mesh: a stylized box car, nose pointing local +Z. */
 function makeCarMesh(color) {
@@ -35,61 +43,96 @@ function makeCarMesh(color) {
   return group;
 }
 
-export function createSpectatorScene(canvas, trackInfo) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+/**
+ * Fit an orthographic camera (already positioned + lookAt-ed) so the 8
+ * bbox corners all land inside the frustum with a little breathing room.
+ */
+function fitCamera(camera, bbox, aspect) {
+  camera.updateMatrixWorld();
+  const inv = camera.matrixWorldInverse;
+  let maxX = 1;
+  let maxY = 1;
+  const c = new THREE.Vector3();
+  for (let i = 0; i < 8; i++) {
+    c.set(
+      i & 1 ? bbox.max.x : bbox.min.x,
+      i & 2 ? bbox.max.y : bbox.min.y,
+      i & 4 ? bbox.max.z : bbox.min.z,
+    ).applyMatrix4(inv);
+    maxX = Math.max(maxX, Math.abs(c.x));
+    maxY = Math.max(maxY, Math.abs(c.y));
+  }
+  const halfH = Math.max(maxY, maxX / aspect) * FIT_MARGIN;
+  const halfW = halfH * aspect;
+  camera.left = -halfW;
+  camera.right = halfW;
+  camera.top = halfH;
+  camera.bottom = -halfH;
+  camera.updateProjectionMatrix();
+}
 
+export function createSpectatorScene(canvas, trackInfo, def) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(1);
+
+  const theme = def.theme;
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0b0e13);
-  scene.fog = new THREE.Fog(0x0b0e13, 900, 1800);
+  scene.background = new THREE.Color(theme.sky); // fog set below, once the camera distance is known
 
-  const camera = new THREE.PerspectiveCamera(46, 1, 1, 4000);
-
-  // lights (simple: hemisphere + one directional)
-  scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x1a1f28, 1.0));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-  sun.position.set(200, 400, 300);
+  // themed lights
+  scene.add(new THREE.HemisphereLight(
+    new THREE.Color(theme.ambient.sky),
+    new THREE.Color(theme.ambient.ground),
+    theme.ambient.intensity ?? 1.0,
+  ));
+  const sun = new THREE.DirectionalLight(new THREE.Color(theme.sun.color), theme.sun.intensity ?? 1.0);
+  sun.position.set(150, 400, 300);
   scene.add(sun);
 
-  const track = buildTrack(scene, trackInfo);
+  const track = buildTrack(scene, trackInfo, def);
+  scene.add(track.group);
 
-  // fit the camera to the track bounding sphere, tilted from the south
-  const samples = [];
-  for (let i = 0; i < 200; i += 1) samples.push(track.curve.getPointAt(i / 200));
-  const center = new THREE.Vector3();
-  for (const p of samples) center.add(p);
-  center.divideScalar(samples.length);
-  let radius = 0;
-  for (const p of samples) radius = Math.max(radius, p.distanceTo(center));
-  radius += 25; // margin
-  const dir = new THREE.Vector3(0.18, 0.92, 0.6).normalize();
-  const distance = radius / Math.sin(THREE.MathUtils.degToRad(23)) * 1.02;
-  camera.position.copy(center).addScaledVector(dir, distance);
+  // fixed camera: from the south (+z), elevated, aimed at the track center
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 10000);
+  const center = track.bbox.getCenter(new THREE.Vector3());
+  const size = track.bbox.getSize(new THREE.Vector3());
+  const distance = (size.x + size.z) * 0.75 + 400;
+  // Fog tuned to the camera distance: the circuit itself stays clear, the
+  // far edge of the ground plane melts into the sky colour
+  scene.fog = new THREE.Fog(new THREE.Color(theme.sky), distance * 1.15, distance * 2.5);
+  camera.position.set(
+    center.x,
+    center.y + distance * Math.sin(ELEVATION),
+    center.z + distance * Math.cos(ELEVATION),
+  );
   camera.lookAt(center);
+  // near=10 (the track is ~500+ m away) keeps depth precision fine enough
+  // that the centimetre-scale road overlays can't z-fight
+  camera.near = 10;
+  camera.far = distance + size.length() * 1.5 + 1000;
 
-  const cars = new Map(); // carId -> { group, labelEl, color, lastS, state }
+  const cars = new Map(); // carId -> { group, color, state, name }
 
   function addCar(carId, name, slotIndex) {
     const color = CAR_COLORS[slotIndex % CAR_COLORS.length];
     const group = makeCarMesh(color);
     scene.add(group);
-    cars.set(carId, { group, color, lastS: null, state: 'RUNNING', name });
+    cars.set(carId, { group, color, state: 'RUNNING', name });
     return color;
   }
 
   function setCar(carId, s, state) {
     const car = cars.get(carId);
     if (!car) return;
-    car.lastS = s;
     car.state = state;
     const group = car.group;
     let pos;
     let heading;
     if (state === 'PITTING') {
       // parked in its pit box (pit boxes are assigned in join/grid order)
-      const slot = cars.size >= 1 ? [...cars.keys()].indexOf(carId) : 0;
-      const box = track.pitBoxes[Math.max(0, Math.min(slot, track.pitBoxes.length - 1))];
-      pos = box.position;
+      const slot = Math.max(0, [...cars.keys()].indexOf(carId));
+      const box = track.pitBoxes[Math.min(slot, track.pitBoxes.length - 1)];
+      pos = box.pos;
       heading = box.tangent;
     } else {
       pos = track.pointAt(s);
@@ -109,9 +152,12 @@ export function createSpectatorScene(canvas, trackInfo) {
   function resize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
+    const bw = Math.max(1, Math.round(w / PIXEL_SCALE));
+    const bh = Math.max(1, Math.round(h / PIXEL_SCALE));
+    renderer.setSize(bw, bh, false); // buffer size; CSS stretches the canvas
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    fitCamera(camera, track.bbox, w / h);
   }
   resize();
   window.addEventListener('resize', resize);
@@ -124,7 +170,7 @@ export function createSpectatorScene(canvas, trackInfo) {
     carIds: () => [...cars.keys()],
     addCar,
     setCar,
-    /** Project a car's world position to screen px for its DOM label. */
+    /** Project a car's world position to screen px (CSS space) for its DOM label. */
     labelScreenPos(carId) {
       const car = cars.get(carId);
       if (!car) return null;
@@ -141,6 +187,7 @@ export function createSpectatorScene(canvas, trackInfo) {
     },
     dispose() {
       window.removeEventListener('resize', resize);
+      track.dispose();
       renderer.dispose();
     },
   };

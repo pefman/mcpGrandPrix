@@ -1,0 +1,112 @@
+{
+  "id": "coastal-palm",
+  "name": "Coastal Palm",
+  "lengthM": 1000,
+  "sectorLengthM": 200,
+  "roadWidthM": 13,
+    "waypoints": [
+    [30, 148], [120, 146], [190, 118], [218, 45],
+    [198, -35], [140, -95], [60, -128], [-10, -118],
+    [-70, -132], [-140, -128], [-198, -85], [-216, -25],
+    [-188, 35], [-125, 80], [-55, 118], [10, 140]
+  ],
+  "water": [
+    {
+      "x": -55,
+      "z": 25,
+      "r": 60
+    }
+  ],
+  "theme": {
+    "sky": "#79c4ef",
+    "ground": {
+      "base": "#e7d3a1",
+      "spot": "#dcc48f",
+      "tileM": 6
+    },
+    "road": {
+      "base": "#5b5f69",
+      "spot": "#535761",
+      "tileM": 3
+    },
+    "curb": {
+      "red": "#e2483d",
+      "white": "#f4f4f4",
+      "threshold": 0.012
+    },
+    "water": "#2fb8bd",
+    "pit": "#838a97",
+    "barriers": true,
+    "ambient": {
+      "sky": "#cdeaff",
+      "ground": "#e0c893",
+      "intensity": 0.7
+    },
+    "sun": {
+      "color": "#fff3d6",
+      "intensity": 0.95
+    }
+  },
+  "props": [
+    {
+      "type": "grandstand",
+      "x": 95,
+      "z": 112,
+      "rot": 0,
+      "w": 64,
+      "d": 12,
+      "h": 8
+    },
+    {
+      "type": "boat",
+      "x": -72,
+      "z": 12
+    },
+    {
+      "type": "boat",
+      "x": -45,
+      "z": 42
+    },
+    {
+      "type": "boat",
+      "x": -28,
+      "z": 14
+    },
+    {
+      "type": "palm",
+      "x": -244,
+      "z": -52
+    },
+    {
+      "type": "palm",
+      "x": -238,
+      "z": -8
+    },
+    {
+      "type": "palm",
+      "x": -228,
+      "z": 34
+    },
+    {
+      "type": "palm",
+      "x": 245,
+      "z": 60
+    },
+    {
+      "type": "palm",
+      "x": 250,
+      "z": 10
+    },
+    {
+      "type": "palm",
+      "x": 150,
+      "z": -160
+    }
+  ],
+  "scatter": {
+    "type": "palm",
+    "count": 30,
+    "seed": 11,
+    "minOffsetM": 16
+  }
+}

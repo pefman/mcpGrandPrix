@@ -28,6 +28,9 @@ services:
       LOG_FILE: /logs/race.jsonl
       # Public demo / solo MCP play: set MIN_AGENTS=1 (default 4).
       MIN_AGENTS: ${MIN_AGENTS:-4}
+      # Track for the spectator client (MCPG-27): coastal-palm (default),
+      # mountain-hairpins, city-night. See tracks/*.json.
+      MCGP_TRACK: ${MCGP_TRACK:-coastal-palm}
     ports:
       - "3080:3080"
     volumes:

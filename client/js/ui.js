@@ -23,6 +23,7 @@ function fmtClock(s) {
 
 export function createUi() {
   const phaseChip = $('phase-chip');
+  const trackLine = $('track-line');
   const lapLine = $('lap-line');
   const clockLine = $('clock-line');
   const connDot = $('conn-dot');
@@ -77,6 +78,10 @@ export function createUi() {
     setPhase(phase) {
       phaseChip.textContent = PHASE_LABEL[phase] ?? phase.toUpperCase();
       phaseChip.className = `phase-${phase}`;
+    },
+
+    setTrack(name) {
+      trackLine.textContent = name || '—';
     },
 
     setLap(currentLap, totalLaps) {

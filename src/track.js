@@ -1,15 +1,19 @@
 /**
  * The race track: one simple closed circuit.
  *
- * The ring is 1000 m (five 200 m sectors). Cars are located by
+ * The track is 1000 m (five 200 m sectors). Cars are located by
  * `distTraveled` (total meters since the grid) and `position` (meters into
  * the current lap, 0 <= position < lengthM).
+ *
+ * `id` identifies the track in the `tracks/` registry (MCPG-27) so the
+ * spectator client can fetch the matching visual definition.
  */
 export class Track {
-  constructor({ name = 'Grand Prix Ring', lengthM = 1000, sectorLengthM = 200 } = {}) {
+  constructor({ id = 'ring', name = 'Grand Prix Ring', lengthM = 1000, sectorLengthM = 200 } = {}) {
     if (lengthM % sectorLengthM !== 0) {
       throw new Error('sectorLengthM must divide lengthM evenly');
     }
+    this.id = id;
     this.name = name;
     this.lengthM = lengthM;
     this.sectorLengthM = sectorLengthM;
@@ -18,6 +22,7 @@ export class Track {
 
   info() {
     return {
+      id: this.id,
       name: this.name,
       lengthM: this.lengthM,
       sectorLengthM: this.sectorLengthM,

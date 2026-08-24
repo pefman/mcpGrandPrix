@@ -12,10 +12,14 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tryServeStatic } from './staticFiles.js';
+import { tryServeTrackDef } from '../tracks.js';
 
 export function createStaticServer(dir) {
   const root = path.resolve(dir);
   return http.createServer((req, res) => {
+    // /tracks/<id>.json (MCPG-27) so the split-deploy client renders the
+    // themed circuit instead of falling back to the legacy ring.
+    if (tryServeTrackDef(req, res)) return;
     if (!tryServeStatic(req, res, root)) {
       res.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not found' }));
     }
