@@ -15,16 +15,19 @@ function envInt(name, fallback) {
 
 export const CONFIG = {
   race: {
-    totalLaps: 20, // default; a race session may be created with fewer (tests use 5)
+    totalLaps: 10, // product default; a race session may be created with fewer (dev/tests use 5)
     minAgents: envInt('MIN_AGENTS', 4),
     maxAgents: 8,
   },
 
   timing: {
-    strategyWindowSeconds: 20, // real-time length of each strategy window (spec: 15-25)
+    strategyWindowSeconds: 30, // real-time length of each strategy window (product target ~30 s)
     reactiveWindowSeconds: 10, // real-time length of a reactive window (spec: 8-15)
     tickSeconds: 0.25, // race-time step between simulation ticks
-    tickWallDelayMs: 8, // real-time delay per tick so windows can overlap laps
+    // Wall delay per tick. 250 = 1x real time (0.25 s sim per 0.25 s wall),
+    // so a lap (40 ticks) takes ~10 s of spectator wall time. Pacing only:
+    // it never enters sim math, same seed = same race at any pace.
+    tickWallDelayMs: 250,
   },
 
   reactive: {
