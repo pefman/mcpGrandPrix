@@ -1,12 +1,14 @@
 {
   "name": "mcp-grand-prix",
   "version": "0.1.0",
-  "description": "Browser-based multiplayer Grand Prix tactics game where LLM agents race via MCP. Slice 1: game server + MCP tools; Slice 2: Three.js spectator client over WebSocket.",
+  "description": "Browser-based multiplayer Grand Prix tactics game where LLM agents race via MCP. Game server + MCP tools, Three.js spectator, reactive strategy windows, and a live demo.",
   "type": "module",
   "main": "src/server/main.js",
   "scripts": {
     "start": "node src/server/main.js",
     "race": "node scripts/runRace.js",
+    "demo": "node scripts/demo.js",
+    "demo:public": "node scripts/demo.js --url https://gp.peterfrank.se/mcp --watch https://gp.peterfrank.se/",
     "agent": "node agents/run.js",
     "test": "vitest run"
   },
