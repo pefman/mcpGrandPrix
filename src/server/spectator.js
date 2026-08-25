@@ -90,7 +90,10 @@ export function createSpectatorHub(httpServer, initialSession, {
   const clients = new Set();
   const clientIds = new Map(); // ws -> id; the vote is keyed per session (MCPG-28)
   let stopped = false;
-  let finishedNotified = session.state().phase === 'finished';
+  // MCPG-40: never dereference the initial session at construction — with a
+  // persistent orchestrator (MCPG-34) it is null until run() creates the
+  // first session. Start as false; phase-transition detection handles the rest.
+  let finishedNotified = false;
   let votingActive = false; // a voting window is open (MCPG-28)
 
   const sendToAll = (msg) => {
@@ -171,14 +174,17 @@ export function createSpectatorHub(httpServer, initialSession, {
     onEvent({ type: 'spectator_connected', spectators: clients.size, remote: req.socket.remoteAddress });
 
     // hello + immediate full snapshot: covers reconnects (snapshots are
-    // self-contained, so no replay history is needed).
-    ws.send(buildHelloMessage(session));
-    if (session.votingInfo) {
+    // self-contained, so no replay history is needed). Read the CURRENT
+    // session (MCPG-34): a viewer connecting after a rotation must get the
+    // new race's state, not the stale bound one.
+    const s = getSession();
+    ws.send(buildHelloMessage(s));
+    if (s.votingInfo) {
       // (Re)connected into an open voting window (MCPG-28): get the window
       // state now, like the hello on connect.
-      ws.send(JSON.stringify({ type: 'voting', ...session.votingInfo }));
+      ws.send(JSON.stringify({ type: 'voting', ...s.votingInfo }));
     }
-    ws.send(buildSnapshotMessage(session, clients.size));
+    ws.send(buildSnapshotMessage(s, clients.size));
 
     ws.on('message', (raw) => {
       ws.isAlive = true; // any inbound traffic counts as keep-alive
@@ -190,9 +196,9 @@ export function createSpectatorHub(httpServer, initialSession, {
       }
       if (msg && msg.type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong', t: Date.now() }));
-      } else if (msg && msg.type === 'vote' && typeof session.castVote === 'function') {
+      } else if (msg && msg.type === 'vote' && typeof getSession().castVote === 'function') {
         // MCPG-28: one vote per WS session (idempotent; re-voting replaces).
-        const res = session.castVote(clientIds.get(ws), msg.trackId);
+        const res = getSession().castVote(clientIds.get(ws), msg.trackId);
         ws.send(JSON.stringify(res.accepted
           ? { type: 'vote_ack', trackId: res.trackId, totalVotes: res.totalVotes }
           : { type: 'vote_rejected', error: res.error }));
