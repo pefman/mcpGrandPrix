@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createMcpHttpServer } from '../src/server/http.js';
 import { RaceSession } from '../src/server/raceSession.js';
 import { closeServer } from './helpers.js';
+import { PALETTE } from '../src/sim/liveries.js';
 
 let session;
 let server;
@@ -58,6 +59,10 @@ describe('MCP tools over Streamable HTTP', () => {
     expect(new Set([carA.carId, carB.carId, carC.carId, carD.carId]).size).toBe(4);
     expect(carA.gridPosition).toBe(1);
     expect(carD.gridPosition).toBe(4);
+    // liveries (MCPG-33): join-order colors, all distinct, carried in the join response
+    expect([carA.color, carB.color, carC.color, carD.color]).toEqual([
+      PALETTE[0], PALETTE[1], PALETTE[2], PALETTE[3],
+    ]);
 
     // re-join with the same name -> same car, no new entry
     const again = await call(clients[0], 'join_race', { name: 'Alpha' });

@@ -4,6 +4,7 @@
  * and the pure helpers.
  */
 import { CONFIG, PACES, TIRE_STRATEGIES } from '../config.js';
+import { LIVERY_FALLBACK } from './liveries.js';
 
 /**
  * @typedef {object} CarStrategy
@@ -19,6 +20,7 @@ import { CONFIG, PACES, TIRE_STRATEGIES } from '../config.js';
  * @property {number} id
  * @property {string} name        // agent display name (also the join key)
  * @property {number} agentId     // MCP session id of the controlling agent
+ * @property {string} color       // hex livery color (assigned by join order)
  * @property {'RUNNING'|'PITTING'|'RETIRED'} status
  * @property {number} distTraveled  // total meters since the grid
  * @property {number} completedLaps
@@ -35,11 +37,12 @@ import { CONFIG, PACES, TIRE_STRATEGIES } from '../config.js';
 
 let nextCarId = 1;
 
-export function createCar({ name, agentId, distTraveled = 0 }) {
+export function createCar({ name, agentId, distTraveled = 0, color = LIVERY_FALLBACK }) {
   const car = {
     id: nextCarId++,
     name,
     agentId,
+    color,
     status: 'RUNNING',
     distTraveled,
     completedLaps: 0,
@@ -106,6 +109,7 @@ export function carSnapshot(car) {
   return {
     id: car.id,
     name: car.name,
+    color: car.color,
     status: car.status,
     positionM: round2(car.position),
     gapToLeaderM: null, // filled in by the session

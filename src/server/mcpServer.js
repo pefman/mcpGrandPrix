@@ -81,6 +81,7 @@ export function createMcpServer(host) {
         return jsonResult({
           carId: res.car.id,
           name: res.car.name,
+          color: res.car.color,
           gridPosition: position,
           claimedFromQueue: res.claimedFromQueue,
           phase: state.phase,

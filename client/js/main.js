@@ -52,7 +52,7 @@ function registerKnownCars() {
   lastSnapshot.cars.forEach((car, i) => {
     carNameById[car.id] = car.name;
     if (!known.has(car.id)) {
-      carColorById[car.id] = scene.addCar(car.id, car.name, i);
+      carColorById[car.id] = scene.addCar(car.id, car.name, i, car.color);
     }
   });
   ui.setCarColors(carColorById);
@@ -72,7 +72,7 @@ function onSnapshot(msg) {
     msg.cars.forEach((car, i) => {
       carNameById[car.id] = car.name;
       if (!known.has(car.id)) {
-        carColorById[car.id] = scene.addCar(car.id, car.name, i);
+        carColorById[car.id] = scene.addCar(car.id, car.name, i, car.color);
         ui.setCarColors(carColorById);
       }
     });

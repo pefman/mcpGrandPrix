@@ -122,6 +122,14 @@ html, body {
   background: rgba(255, 255, 255, 0.04);
 }
 .sw-car.done { color: var(--text); border-color: rgba(55, 224, 141, 0.6); background: rgba(55, 224, 141, 0.12); }
+.sw-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 2px;
+  vertical-align: baseline;
+}
 
 /* ---------- leaderboard ---------- */
 #leaderboard {

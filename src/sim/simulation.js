@@ -17,6 +17,7 @@ import { CONFIG } from '../config.js';
 import { Track } from '../track.js';
 import { carSnapshot, createCar, defaultStrategy, parseStrategy } from './car.js';
 import { createRng } from '../rng.js';
+import { colorForSlot } from './liveries.js';
 import {
   allowedActionsFor,
   createReactiveWindow,
@@ -76,9 +77,9 @@ export class Simulation {
     // First joiner takes P1: the grid is staggered so that join order
     // equals grid position (later joiners start further behind on track).
     const distTraveled = (CONFIG.race.maxAgents + 1 - this.cars.length) * CONFIG.grid.formationGapM;
-    const car = createCar({ name, agentId, distTraveled });
+    const car = createCar({ name, agentId, distTraveled, color: colorForSlot(this.cars.length) });
     this.cars.push(car);
-    this._emit('agent_joined', { carId: car.id, name, position: this.cars.length + 1 });
+    this._emit('agent_joined', { carId: car.id, name, color: car.color, position: this.cars.length + 1 });
     return car;
   }
 
@@ -569,6 +570,7 @@ export class Simulation {
         position,
         carId: c.id,
         name: c.name,
+        color: c.color,
         status: c.status,
         completedLaps: c.completedLaps,
         gapToLeaderM: leader && c.id === leader.id ? 0 : this._gapToLeaderM(c, leader),
