@@ -135,19 +135,22 @@ conn.addEventListener('reset', () => {
 function frame() {
   requestAnimationFrame(frame);
   if (!scene) return;
-  const renderAt = performance.now() - RENDER_DELAY_MS;
+  const now = performance.now();
+  const renderAt = now - RENDER_DELAY_MS;
 
   if (buffer && lastSnapshot) {
     const carsById = new Map(lastSnapshot.cars.map((c) => [c.id, c]));
     for (const carId of scene.carIds()) {
       const smp = buffer.sample(carId, renderAt);
       if (!smp) continue;
-      scene.setCar(carId, smp.s, smp.status);
+      // lastSnapshot drives race-moment FX (overtake/start/finish/pit, MCPG-46)
+      scene.setCar(carId, smp.s, smp.status, lastSnapshot);
       const car = carsById.get(carId);
       const extra = smp.status === 'PITTING' && car ? `PIT ${car.pitTimeLeftS?.toFixed(0)}s` : '';
       ui.placeLabel(carId, carNameById[carId] ?? carId, scene.labelScreenPos(carId), extra);
     }
   }
+  scene.tick(now); // advance FX particles (runs even while the buffer is empty)
   scene.render();
 }
 
