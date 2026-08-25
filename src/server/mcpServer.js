@@ -24,7 +24,7 @@ const strategySchema = z
 // Reactive actions (Slice 3): exactly one per window per car.
 const reactiveTypes = ['attack', 'defend', 'hold', 'pit_now'];
 
-export function createMcpServer(host) {
+export function createMcpServer(host, { sessionId } = {}) {
   const isOrchestrator = typeof host.joinAgent === 'function';
   // The active session: the orchestrator exposes the current one; a bare
   // session is its own session.
@@ -37,33 +37,45 @@ export function createMcpServer(host) {
     {
       title: 'Join the race',
       description:
-        'Join the current race as a car, or queue for the next one. ' +
-        'In the setup phase you are added to the grid immediately. Outside setup ' +
-        '(or when the grid is full) you are placed in the FIFO pending queue and ' +
-        'promised a seat in the NEXT race session — re-call join_race with the ' +
-        'same name during that session\'s setup to claim it. Idempotent: the same ' +
-        'name joins/claims the same car; joining a queued name again only ' +
-        're-confirms its queue position. The server keeps running across races.',
-      inputSchema: { name: z.string().min(1).describe('Driver/agent display name') },
+        'Join the current race as a car, or queue for the next one. Your driver ' +
+        'identity is bound to THIS MCP connection (session id), not to your name: ' +
+        'this session controls exactly ONE car — the one whose carId the response ' +
+        'returns — and re-calling join_race from this same session always returns ' +
+        'that same car. If a DIFFERENT session already took your requested display ' +
+        'name you still get your own new car, with an auto-suffixed display name ' +
+        '("name#2", "#3", ...). In the setup phase you are added to the grid ' +
+        'immediately. Outside setup (or when the grid is full) you are placed in ' +
+        'the FIFO pending queue and promised a seat in the NEXT race session — ' +
+        're-call join_race from this same session during that setup to claim it. ' +
+        'The server keeps running across races.',
+      inputSchema: {
+        name: z
+          .string()
+          .min(1)
+          .describe('Driver/agent display name (cosmetic only — identity comes from your MCP session)'),
+      },
     },
     async ({ name }) => {
       try {
         let res;
         if (isOrchestrator) {
-          res = host.joinAgent(name);
+          res = host.joinAgent(name, sessionId);
         } else {
-          const car = current().addAgent(name, 'mcp-client');
+          const car = current().addAgent(name, sessionId);
           res = { status: 'joined', car, claimedFromQueue: false };
         }
         if (res.status === 'queued') {
           const state = host.state();
           return jsonResult({
             queued: true,
+            requestedName: name,
             name: res.name,
             position: res.position,
             phase: state.phase,
             totalLaps: state.totalLaps,
-            hint: "You are in the FIFO pending queue for the next race. Re-call join_race with the same name during that session's setup phase to claim your seat; use get_race_state to track the phase.",
+            hint:
+              "You are in the FIFO pending queue for the next race. Re-call join_race from this SAME session " +
+              "during that session's setup phase to claim your seat; use get_race_state to track the phase.",
           });
         }
         if (res.status === 'queue_full') {
@@ -79,8 +91,10 @@ export function createMcpServer(host) {
         const state = current().state();
         const position = state.cars.findIndex((c) => c.id === res.car.id) + 1;
         return jsonResult({
+          youAre: `You control exactly this car: carId ${res.car.id} ("${res.car.name}"). All your tool calls act on this carId.`,
           carId: res.car.id,
           name: res.car.name,
+          requestedName: name,
           color: res.car.color,
           gridPosition: position,
           claimedFromQueue: res.claimedFromQueue,
@@ -88,6 +102,7 @@ export function createMcpServer(host) {
           totalLaps: state.totalLaps,
           minAgents: state.minAgents,
           carsJoined: state.cars.length,
+          track: { id: state.track.id, name: state.track.name },
         });
       } catch (err) {
         return jsonResult({ error: 'join_failed', details: err.message });

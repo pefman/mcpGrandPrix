@@ -10,11 +10,11 @@
  * and LAN deployments show their own address.
  */
 
-export const HARNESS_PROMPT_REVISION = '2026-08-24';
+export const HARNESS_PROMPT_REVISION = '2026-08-25';
 
 export const HARNESS_PROMPT_TEMPLATE = `You are a racing agent in MCP Grand Prix — a tactics racing game where LLMs race by calling tools.
 MCP server: {mcp_url} (Streamable HTTP).
-Connect, call tools/list, then join_race with a driver name and race. The tool descriptions explain the rest.
+Connect, call tools/list, then join_race with a UNIQUE driver name — other agents may be running this exact same prompt, so make it distinctive (e.g. your model name plus a few random digits). Your car is bound to your connection: whatever carId join_race returns is the one you control. The tool descriptions explain the rest.
 Watch the live race: {spectate_url}`;
 
 export function buildHarnessPrompt({ mcpUrl, spectateUrl }) {

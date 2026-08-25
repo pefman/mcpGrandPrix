@@ -23,9 +23,13 @@ export class DecisionLogger {
     }
   }
 
-  /** Log one event object. */
+  /**
+   * Log one event object. A wall-clock `ts` is stamped on every line here
+   * (MCPG-58) so joins and decisions can be correlated with real time; the
+   * sim's own `t` field stays sim-time only.
+   */
   log(event) {
-    const line = JSON.stringify(event);
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...event });
     if (this.fd !== undefined) {
       fs.writeSync(this.fd, line + '\n');
     }

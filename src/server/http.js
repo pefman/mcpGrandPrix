@@ -89,17 +89,21 @@ export function createMcpHttpServer(session, { path = '/mcp', staticDir = null }
         const sessionId = req.headers['mcp-session-id'];
         let transport = sessionId ? transports.get(sessionId) : undefined;
         if (!transport) {
-          // New session: create transport + a fresh McpServer bound to the shared session
+          // New session: one stable identity per MCP client session (MCPG-58).
+          // The id is generated up front so the tool layer can key driver
+          // identity to it — two clients that join with the same display
+          // name still get two distinct cars.
+          const sid = randomUUID();
           transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (sid) => {
-              transports.set(sid, transport);
+            sessionIdGenerator: () => sid,
+            onsessioninitialized: (sidInitialized) => {
+              transports.set(sidInitialized, transport);
             },
           });
           transport.onclose = () => {
             if (transport.sessionId) transports.delete(transport.sessionId);
           };
-          const mcp = createMcpServer(session);
+          const mcp = createMcpServer(session, { sessionId: sid });
           await mcp.connect(transport);
         }
         const body = await readBody(req);

@@ -64,20 +64,43 @@ export class Simulation {
 
   // ---------------------------------------------------------------- agents
 
-  /** Idempotent join: same name re-joins the same car. */
+  /**
+   * Join rule (MCPG-58): identity is keyed by the MCP session id
+   * (`agentId`), the display name is cosmetic.
+   *   - Same session re-joining → same car (true idempotent rejoin).
+   *   - Name already taken by a DIFFERENT session → a new car is created and
+   *     the display name gets a visible auto-suffix ("name#2", "#3", ...).
+   * One `agent_joined` event is emitted per join attempt, so joins (and
+   * collisions) are greppable in the decision log.
+   */
   addAgent(name, agentId) {
+    if (!agentId) throw new Error('addAgent requires an agentId (the MCP session id)');
     if (this.phase !== 'setup') {
       throw new Error(`race already in phase '${this.phase}'; joining is closed`);
     }
-    const existing = this.cars.find((c) => c.name === name);
-    if (existing) return existing;
+    const own = this.cars.find((c) => c.agentId === agentId);
+    if (own) {
+      this._emit('agent_joined', {
+        carId: own.id,
+        name: own.name,
+        color: own.color,
+        position: this.cars.indexOf(own) + 1,
+        agentId,
+        requestedName: name,
+        suffixApplied: false,
+        rejoined: true,
+      });
+      return own;
+    }
     if (this.cars.length >= CONFIG.race.maxAgents) {
       throw new Error(`race is full (max ${CONFIG.race.maxAgents} agents)`);
     }
+    const finalName = this._freeName(name);
+    const suffixApplied = finalName !== name;
     // First joiner takes P1: the grid is staggered so that join order
     // equals grid position (later joiners start further behind on track).
     const distTraveled = (CONFIG.race.maxAgents + 1 - this.cars.length) * CONFIG.grid.formationGapM;
-    const car = createCar({ name, agentId, distTraveled, color: colorForSlot(this.cars.length) });
+    const car = createCar({ name: finalName, agentId, distTraveled, color: colorForSlot(this.cars.length) });
     // Sector/lap timing state (MCPG-31). Lap 1 starts at race start (sim
     // time 0) from the car's grid position; its first "sector 1" split runs
     // from the grid to the first sector line (standard "splits start from
@@ -90,8 +113,27 @@ export class Simulation {
     car.sectorStartDist = Math.floor(car.distTraveled / this.track.sectorLengthM) * this.track.sectorLengthM;
     car.sectorStartTimeS = 0;
     this.cars.push(car);
-    this._emit('agent_joined', { carId: car.id, name, color: car.color, position: this.cars.length + 1 });
+    // Grid slot = 1-based join order (index of the just-pushed car + 1).
+    this._emit('agent_joined', {
+      carId: car.id,
+      name: finalName,
+      color: car.color,
+      position: this.cars.indexOf(car) + 1,
+      agentId,
+      requestedName: name,
+      suffixApplied,
+      rejoined: false,
+    });
     return car;
+  }
+
+  /** First display name derived from `name` that no car uses yet. */
+  _freeName(name) {
+    if (!this.cars.some((c) => c.name === name)) return name;
+    for (let n = 2; ; n += 1) {
+      const candidate = `${name}#${n}`;
+      if (!this.cars.some((c) => c.name === candidate)) return candidate;
+    }
   }
 
   // ------------------------------------------------------------ phase flow

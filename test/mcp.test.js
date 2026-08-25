@@ -47,16 +47,25 @@ describe('MCP tools over Streamable HTTP', () => {
   let clients = [];
   let carA, carB, carC, carD;
 
-  it('four agents can join, and join_race is idempotent by name', async () => {
-    // sequential joins: grid position = join order (P1 first)
+  it('four sessions joining with the SAME name get four distinct cars (MCPG-58)', async () => {
+    // sequential joins: grid position = join order (P1 first); every client
+    // is a separate MCP session (own transport) asking for the identical
+    // premade-harness name — exactly the live-race collapse scenario.
     const joined = [];
-    for (const n of ['Alpha', 'Bravo', 'Charlie', 'Delta']) {
-      const client = await connect(n);
+    for (let i = 0; i < 4; i += 1) {
+      const client = await connect(`harness-session-${i + 1}`);
       clients.push(client);
-      joined.push(await call(client, 'join_race', { name: n }));
+      joined.push(await call(client, 'join_race', { name: 'opencode' }));
     }
     [carA, carB, carC, carD] = joined;
+    // four distinct cars bound one-to-one to the four sessions
     expect(new Set([carA.carId, carB.carId, carC.carId, carD.carId]).size).toBe(4);
+    // display names auto-suffix so the grid stays readable; identity fields
+    // unambiguously say who you are
+    expect([carA.name, carB.name, carC.name, carD.name]).toEqual([
+      'opencode', 'opencode#2', 'opencode#3', 'opencode#4',
+    ]);
+    for (const r of joined) expect(r.requestedName).toBe('opencode');
     expect(carA.gridPosition).toBe(1);
     expect(carD.gridPosition).toBe(4);
     // liveries (MCPG-33): join-order colors, all distinct, carried in the join response
@@ -64,8 +73,8 @@ describe('MCP tools over Streamable HTTP', () => {
       PALETTE[0], PALETTE[1], PALETTE[2], PALETTE[3],
     ]);
 
-    // re-join with the same name -> same car, no new entry
-    const again = await call(clients[0], 'join_race', { name: 'Alpha' });
+    // re-join from the SAME session -> same car, no new entry
+    const again = await call(clients[0], 'join_race', { name: 'opencode' });
     expect(again.carId).toBe(carA.carId);
     const state = await call(clients[0], 'get_race_state', {});
     expect(state.cars).toHaveLength(4);

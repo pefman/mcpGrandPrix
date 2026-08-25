@@ -112,7 +112,7 @@ describe('Liveries: palette + join-order assignment', () => {
     expect(colorForSlot(-1)).toBe(LIVERY_FALLBACK);
   });
 
-  it('assigns sequential join-order colors and re-join is idempotent', () => {
+  it('assigns sequential join-order colors; re-join is per session, not per name', () => {
     const events = [];
     const sim = makeSim({ onEvent: (e) => events.push(e) });
     const a = sim.addAgent('A', 'a');
@@ -120,15 +120,55 @@ describe('Liveries: palette + join-order assignment', () => {
     expect(a.color).toBe(PALETTE[0]);
     expect(b.color).toBe(PALETTE[1]);
 
-    const again = sim.addAgent('A', 'a-other'); // idempotent re-join
+    const again = sim.addAgent('A', 'a'); // same session -> same car
     expect(again).toBe(a);
     expect(again.color).toBe(PALETTE[0]);
 
-    // the agent_joined log event carries the color
+    // the agent_joined log event carries the color (rejoin included)
     expect(events.filter((e) => e.type === 'agent_joined').map((e) => e.color)).toEqual([
       PALETTE[0],
       PALETTE[1],
+      PALETTE[0],
     ]);
+  });
+
+  it('four sessions with the SAME name get four distinct cars with suffixed display names (MCPG-58)', () => {
+    const events = [];
+    const sim = makeSim({ onEvent: (e) => events.push(e) });
+    const cars = [
+      sim.addAgent('opencode', 'session-1'),
+      sim.addAgent('opencode', 'session-2'),
+      sim.addAgent('opencode', 'session-3'),
+    ];
+    // distinct cars, distinct session bindings, distinct liveries
+    expect(new Set(cars.map((c) => c.id)).size).toBe(3);
+    expect(cars.map((c) => c.agentId)).toEqual(['session-1', 'session-2', 'session-3']);
+    expect(cars.map((c) => c.color)).toEqual([PALETTE[0], PALETTE[1], PALETTE[2]]);
+    // first keeps the name, later colliding sessions get visible suffixes
+    expect(cars.map((c) => c.name)).toEqual(['opencode', 'opencode#2', 'opencode#3']);
+
+    // one join event per attempt, with identity + collision info
+    const joins = events.filter((e) => e.type === 'agent_joined');
+    expect(joins).toHaveLength(3);
+    for (const [i, e] of joins.entries()) {
+      expect(e.requestedName).toBe('opencode');
+      expect(e.agentId).toBe(`session-${i + 1}`);
+      expect(e.suffixApplied).toBe(i > 0);
+      expect(e.rejoined).toBe(false);
+      expect(e.carId).toBe(cars[i].id);
+    }
+  });
+
+  it('a rejoining session keeps its car even if it asks for a different name; suffix scan skips taken names', () => {
+    const sim = makeSim();
+    const a = sim.addAgent('X', 's1');
+    sim.addAgent('X#2', 's2'); // explicitly takes what a naive suffix scan would pick next
+    const rejoined = sim.addAgent('Y', 's1');
+    expect(rejoined).toBe(a); // same session wins over the requested name
+
+    const third = sim.addAgent('X', 's3');
+    expect(third.name).toBe('X#3'); // X and X#2 are taken
+    expect(() => sim.addAgent('Z')).toThrow(/agentId/);
   });
 
   it('every snapshot surface carries the car color', () => {

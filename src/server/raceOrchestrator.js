@@ -5,7 +5,9 @@
  * results are held for `resultsHoldSeconds`, then a fresh session opens in
  * `setup`. An agent that tries to join outside `setup` is not rejected with a
  * dead end — it is queued (FIFO, capped by the grid size) and, when the next
- * session opens, its name claims its seat at join time (`agent_promoted`).
+ * session opens, its MCP session id claims its seat at join time
+ * (`agent_promoted`; display names are cosmetic and auto-suffixed on
+ * collisions, MCPG-58).
  *
  * Queue semantics (FIFO promise, not a reservation): an entry promises a seat
  * in the NEXT session only. It expires once that session's grace clock
@@ -100,7 +102,7 @@ export class RaceOrchestrator {
     this.delayFn = delayFn;
     this.onSession = onSession;
     this.onRaceComplete = onRaceComplete;
-    this.pending = []; // FIFO of { name, queuedAtMs, raceSeq }
+    this.pending = []; // FIFO of { name(display), agentId (MCP session id), queuedAtMs, raceSeq }
     this.session = null; // current RaceSession (null before run())
     this.raceSeq = 0;
     this._graceUntilMs = 0;
@@ -334,31 +336,40 @@ export class RaceOrchestrator {
   }
 
   /**
-   * Agent-facing join (MCP join_race). Outside `setup` the name goes to the
-   * pending queue instead of failing; in `setup` a queued name claims its
-   * seat on join (idempotent by name, as before).
+   * Agent-facing join (MCP join_race). Outside `setup` the session goes to
+   * the pending queue instead of failing; in `setup` a queued session claims
+   * its seat on join (idempotent by MCP session id — MCPG-58; names are
+   * display-only and auto-suffixed on collisions).
    *
    * @returns {{status: 'joined', car: object, claimedFromQueue: boolean}
-   *           |{status: 'queued', name: string, position: number, phase: string}
+   *           |{status: 'queued', name: string, requestedName: string, position: number, phase: string}
    *           |{status: 'queue_full', maxSize: number, phase: string}}
    */
-  joinAgent(name, agentId = 'mcp-client') {
+  joinAgent(name, agentId) {
+    if (!agentId) throw new Error('joinAgent requires an agentId (the MCP session id)');
     this._settleGraceIfDue();
     const s = this.session;
     if (!s || s.sim.phase !== 'setup') {
-      return this._enqueue(name);
+      return this._enqueue(name, agentId);
     }
     try {
       const car = s.addAgent(name, agentId);
-      const qi = this._queueIndex(name);
+      const qi = this._queueIndex(agentId);
       if (qi !== -1) {
         this.pending.splice(qi, 1);
-        this.logger.log({ type: 'agent_promoted', name, raceSeq: this.raceSeq, raceId: this.raceId, carId: car.id });
+        this.logger.log({
+          type: 'agent_promoted',
+          name: car.name,
+          agentId,
+          raceSeq: this.raceSeq,
+          raceId: this.raceId,
+          carId: car.id,
+        });
         return { status: 'joined', car, claimedFromQueue: true };
       }
       return { status: 'joined', car, claimedFromQueue: false };
     } catch (err) {
-      if (/race is full/i.test(err.message)) return this._enqueue(name);
+      if (/race is full/i.test(err.message)) return this._enqueue(name, agentId);
       throw err;
     }
   }
@@ -395,28 +406,53 @@ export class RaceOrchestrator {
       this.logger.log({
         type: 'queue_expired',
         names: expired.map((p) => p.name),
+        agentIds: expired.map((p) => p.agentId),
         raceSeq: this.raceSeq,
         raceId: this.raceId,
       });
     }
   }
 
-  _queueIndex(name) {
-    return this.pending.findIndex((p) => p.name === name);
+  _queueIndex(agentId) {
+    return this.pending.findIndex((p) => p.agentId === agentId);
   }
 
-  _enqueue(name) {
-    const existing = this._queueIndex(name);
+  /**
+   * Queue a session for the NEXT race (MCPG-58: keyed by MCP session id,
+   * display names auto-suffixed so two sessions with the same requested
+   * name stay distinguishable on the ticker and in the log).
+   */
+  _enqueue(name, agentId) {
+    const existing = this._queueIndex(agentId);
     if (existing !== -1) {
-      return { status: 'queued', name, position: existing + 1, phase: this._phase() };
+      const p = this.pending[existing];
+      return { status: 'queued', name: p.name, requestedName: name, position: existing + 1, phase: this._phase() };
     }
     if (this.pending.length >= this.maxAgents) {
       return { status: 'queue_full', maxSize: this.maxAgents, phase: this._phase() };
     }
+    const displayName = this._freeQueueName(name);
     // Promised the NEXT session: it opens after the current one's results hold.
-    this.pending.push({ name, queuedAtMs: Date.now(), raceSeq: this.raceSeq + 1 });
-    this.logger.log({ type: 'agent_queued', name, position: this.pending.length, phase: this._phase(), raceSeq: this.raceSeq });
-    return { status: 'queued', name, position: this.pending.length, phase: this._phase() };
+    this.pending.push({ name: displayName, agentId, queuedAtMs: Date.now(), raceSeq: this.raceSeq + 1 });
+    this.logger.log({
+      type: 'agent_queued',
+      name: displayName,
+      agentId,
+      position: this.pending.length,
+      phase: this._phase(),
+      raceSeq: this.raceSeq,
+    });
+    return { status: 'queued', name: displayName, requestedName: name, position: this.pending.length, phase: this._phase() };
+  }
+
+  /** First display name derived from `name` unused by pending entries or current cars. */
+  _freeQueueName(name) {
+    const taken = new Set([...this.pending.map((p) => p.name), ...(this.session?.sim.cars ?? []).map((c) => c.name)]);
+    if (!taken.has(name)) return name;
+    for (let n = 2; ; n += 1) {
+      const candidate = `${name}#${n}`;
+      if (!taken.has(candidate)) return candidate;
+    }
   }
 
   _phase() {
