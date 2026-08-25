@@ -1,0 +1,220 @@
+/* voxel-sandbox.css — MCP Grand Prix voxel design sandbox (MCPG-59).
+ *
+ * Mirrors the production HUD layout (client/style.css, voxel skin) so the
+ * full frame — scene + overlays — can be judged together. Only the pieces
+ * the sandbox shows are included.
+ */
+:root {
+  --bg: #0b0e13;
+  --panel: rgba(13, 17, 24, 0.88);
+  --panel-border: rgba(255, 255, 255, 0.09);
+  --text: #e8ecf2;
+  --muted: #8b95a7;
+  --accent: #ff2d78;
+  --green: #37e08d;
+  --blue: #4da3ff;
+  --amber: #ffb020;
+  --purple: #b07cff;
+  --red: #ff5470;
+  --voxel-radius: 0;
+  --voxel-shadow: 4px 4px 0 rgba(0, 0, 0, 0.4);
+  --voxel-shadow-sm: 3px 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 13px;
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  display: block;
+}
+
+.ui-hidden .ui { display: none !important; }
+.muted { color: var(--muted); }
+
+/* ---------- top-left HUD ---------- */
+#hud {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 10;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
+  padding: 10px 14px;
+  min-width: 190px;
+  backdrop-filter: blur(6px);
+}
+
+#phase-chip {
+  display: inline-block;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: var(--voxel-radius);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: var(--voxel-shadow-sm);
+  margin-bottom: 8px;
+}
+.phase-simulation { background: rgba(55, 224, 141, 0.18); color: var(--green); }
+
+#track-line {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 6px;
+}
+#lap-line { font-size: 15px; font-weight: 700; letter-spacing: 0.05em; }
+#clock-line { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+/* ---------- top-right connection ---------- */
+#conn-box {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
+  padding: 8px 12px;
+  backdrop-filter: blur(6px);
+}
+#conn-dot { width: 9px; height: 9px; border-radius: 0; display: inline-block; box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.4); }
+.dot-on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+#conn-text { font-size: 11px; letter-spacing: 0.1em; }
+#viewers { font-size: 11px; }
+
+/* ---------- strategy banner ---------- */
+#strategy-banner {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  text-align: center;
+  background: rgba(20, 32, 54, 0.92);
+  border: 2px solid rgba(77, 163, 255, 0.5);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
+  padding: 10px 22px;
+  backdrop-filter: blur(6px);
+}
+#strategy-title { color: var(--blue); font-weight: 700; letter-spacing: 0.12em; font-size: 12px; }
+#strategy-countdown { font-size: 26px; font-weight: 800; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+#strategy-cars { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+.sw-car {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--voxel-radius);
+  border: 2px solid var(--panel-border);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+}
+.sw-car.done { color: var(--text); border-color: rgba(55, 224, 141, 0.6); background: rgba(55, 224, 141, 0.12); }
+.sw-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 0;
+  vertical-align: baseline;
+}
+
+/* ---------- leaderboard ---------- */
+#leaderboard {
+  position: fixed;
+  top: 64px;
+  right: 14px;
+  z-index: 10;
+  width: 372px;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
+  padding: 8px 0;
+  backdrop-filter: blur(6px);
+}
+.lb-head, .lb-row {
+  display: grid;
+  grid-template-columns: 26px 1fr 40px 50px 58px 74px;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 12px;
+}
+.lb-head { color: var(--muted); font-size: 10px; letter-spacing: 0.1em; }
+.lb-row { font-size: 12px; }
+.lb-pos { color: var(--muted); font-weight: 700; }
+.lb-name { display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; }
+.lb-swatch { width: 9px; height: 9px; border-radius: 0; flex: none; }
+.lb-laps { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.lb-last { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+.lb-spl { text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+.lb-spl.best { color: var(--green); font-weight: 700; }
+.lb-gap { text-align: right; font-variant-numeric: tabular-nums; }
+.tire-bar { grid-column: 1 / -1; height: 3px; border-radius: 0; background: rgba(255,255,255,0.12); margin-top: 3px; overflow: hidden; }
+.tire-fill { height: 100%; border-radius: 0; }
+
+/* ---------- 2D circuit minimap ---------- */
+#minimap-panel {
+  position: fixed;
+  bottom: 56px; /* production: above the bottom-left features area */
+  left: 14px;
+  z-index: 10;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow-sm);
+  padding: 6px;
+  backdrop-filter: blur(6px);
+}
+#minimap { display: block; }
+
+/* ---------- car labels (projected) ---------- */
+#labels { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+.car-label {
+  position: absolute;
+  transform: translate(-50%, -140%);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 0;
+  background: rgba(8, 10, 14, 0.75);
+  border: 2px solid var(--panel-border);
+  white-space: nowrap;
+}
+
+/* ---------- sandbox badge (bottom-right) ---------- */
+#sandbox-badge {
+  position: fixed;
+  bottom: 14px;
+  right: 14px;
+  z-index: 10;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow-sm);
+  padding: 5px 12px;
+  backdrop-filter: blur(6px);
+}

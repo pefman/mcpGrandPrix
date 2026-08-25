@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Grand Prix — Voxel Sandbox (MCPG-59)</title>
+<link rel="stylesheet" href="./voxel-sandbox.css">
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+
+<!-- Mock spectator UI (MCPG-59). Static markup with the production layout
+     and ids so the full frame can be judged against the live client. -->
+
+<div id="hud" class="ui">
+  <div id="phase-chip" class="phase-simulation">RACE LIVE</div>
+  <div id="track-line">Coastal Palm</div>
+  <div id="lap-line">LAP 7 / 16</div>
+  <div id="clock-line">12:34.5</div>
+</div>
+
+<div id="conn-box" class="ui">
+  <span id="conn-dot" class="dot-on"></span>
+  <span id="conn-text">LIVE</span>
+  <span id="viewers" class="muted">128 watching</span>
+</div>
+
+<div id="strategy-banner" class="ui">
+  <div id="strategy-title">STRATEGY WINDOW · LAP 8</div>
+  <div id="strategy-countdown">14.2</div>
+  <div id="strategy-cars">
+    <span class="sw-car"><span class="sw-dot" style="background:#ff3b30"></span>Slipstreamer</span>
+    <span class="sw-car done"><span class="sw-dot" style="background:#ff9500"></span>Tirewrecker ✓</span>
+    <span class="sw-car"><span class="sw-dot" style="background:#ffd60a"></span>Lapdancer</span>
+    <span class="sw-car"><span class="sw-dot" style="background:#34c759"></span>Overtaker99</span>
+  </div>
+</div>
+
+<div id="leaderboard" class="ui">
+  <div class="lb-head">
+    <span>POS</span><span>CAR</span><span>LAP</span><span>LAST</span><span>SPL</span><span>GAP</span>
+  </div>
+  <div class="lb-row">
+    <span class="lb-pos">1</span>
+    <span class="lb-name"><span class="lb-swatch" style="background:#ff3b30"></span>Slipstreamer</span>
+    <span class="lb-laps">7</span>
+    <span class="lb-last">1:24.3</span>
+    <span class="lb-spl best">1:23.9</span>
+    <span class="lb-gap">—</span>
+    <div class="tire-bar"><div class="tire-fill" style="width:58%;background:var(--green)"></div></div>
+  </div>
+  <div class="lb-row">
+    <span class="lb-pos">2</span>
+    <span class="lb-name"><span class="lb-swatch" style="background:#ff9500"></span>Tirewrecker</span>
+    <span class="lb-laps">7</span>
+    <span class="lb-last">1:26.1</span>
+    <span class="lb-spl">1:25.4</span>
+    <span class="lb-gap">+2.1</span>
+    <div class="tire-bar"><div class="tire-fill" style="width:39%;background:var(--amber)"></div></div>
+  </div>
+  <div class="lb-row">
+    <span class="lb-pos">3</span>
+    <span class="lb-name"><span class="lb-swatch" style="background:#ffd60a"></span>Lapdancer</span>
+    <span class="lb-laps">7</span>
+    <span class="lb-last">1:25.8</span>
+    <span class="lb-spl">1:25.1</span>
+    <span class="lb-gap">+5.8</span>
+    <div class="tire-bar"><div class="tire-fill" style="width:22%;background:var(--amber)"></div></div>
+  </div>
+  <div class="lb-row">
+    <span class="lb-pos">4</span>
+    <span class="lb-name"><span class="lb-swatch" style="background:#34c759"></span>Overtaker99</span>
+    <span class="lb-laps">6</span>
+    <span class="lb-last">1:27.4</span>
+    <span class="lb-spl">1:26.2</span>
+    <span class="lb-gap">+9.4</span>
+    <div class="tire-bar"><div class="tire-fill" style="width:9%;background:var(--red)"></div></div>
+  </div>
+</div>
+
+<div id="minimap-panel" class="ui">
+  <canvas id="minimap" width="200" height="150"></canvas>
+</div>
+
+<div id="labels"></div>
+<div id="sandbox-badge" class="ui">VOXEL SANDBOX · look v1</div>
+
+<script type="module" src="./voxel-sandbox.js"></script>
+</body>
+</html>
