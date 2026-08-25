@@ -14,6 +14,7 @@
  */
 import * as THREE from 'three';
 import { buildTrack } from './track.js';
+import { createFx } from './fx.js';
 
 export const CAR_COLORS = [
   '#ff3b30', '#ff9500', '#ffd60a', '#34c759',
@@ -143,6 +144,77 @@ export function createSpectatorScene(canvas, trackInfo, def) {
 
   const cars = new Map(); // carId -> { group, color, state, name }
 
+  // ---- race FX (Step 4, MCPG-46): one shared effect system (client/js/fx.js)
+  const fx = createFx(scene);
+  const fxPos = new THREE.Vector3(); // long-lived: fx.burst copies it
+  let prevOrder = null;    // last seen standings order (overtake detection)
+  let prevPhase = null;    // last seen phase (start / finish detection)
+  const lastOvertakeAt = new Map(); // pairKey -> ms (one burst per pass)
+
+  /**
+   * Detect race moments from snapshot-to-snapshot state and fire FX.
+   * Purely visual — the sim's own event log stays the record of truth.
+   * Called from setCar with the driving snapshot; positions come from the
+   * render buffer (the car is placed right before this).
+   */
+  function detectEvents(snapshot) {
+    const now = performance.now();
+
+    // race start: first strategy window of the race (cars still on the grid)
+    if (prevPhase === 'setup' && snapshot.phase === 'strategy_window') {
+      for (const c of snapshot.cars) {
+        const car = cars.get(c.id);
+        if (!car) continue;
+        fx.burst('start', car.group.position, { count: 5, speed: 24, up: 9, life: 1.5 });
+      }
+    }
+
+    // race finish: confetti above every car — tinted by livery, P1 gets a
+    // bigger gold column
+    if (prevPhase !== 'finished' && snapshot.phase === 'finished') {
+      const posById = new Map((snapshot.standings ?? []).map((e) => [e.carId, e.position]));
+      for (const [carId, car] of cars) {
+        const p1 = posById.get(carId) === 1;
+        fx.burst('finish', car.group.position, {
+          count: p1 ? 22 : 10,
+          speed: 26,
+          up: p1 ? 14 : 8,
+          life: 2.2,
+          color: p1 ? 0xffe066 : new THREE.Color(car.color),
+        });
+      }
+    }
+
+    // overtakes: standings order changed -> burst at the mid point of the
+    // cars whose relative order flipped. The order only flips on a real
+    // position change in the sim, so this cannot fire off the pit lane.
+    const order = (snapshot.standings ?? []).map((e) => e.carId);
+    if (prevOrder && order.length > 0 && order.length === prevOrder.length) {
+      const prevIdx = new Map(prevOrder.map((id, i) => [id, i]));
+      const idx = new Map(order.map((id, i) => [id, i]));
+      for (let i = 0; i < order.length; i++) {
+        for (let j = i + 1; j < order.length; j++) {
+          const a = order[i];
+          const b = order[j];
+          if ((prevIdx.get(a) ?? 0) - (prevIdx.get(b) ?? 0) >= idx.get(a) - idx.get(b)) continue;
+          // a and b swapped: a is now ahead of b, it wasn't before
+          const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+          const lastAt = lastOvertakeAt.get(key) ?? -Infinity;
+          if (now - lastAt < 3000) continue; // debounce: the flip wobbles a few frames
+          lastOvertakeAt.set(key, now);
+          const ca = cars.get(a)?.group;
+          const cb = cars.get(b)?.group;
+          if (!ca || !cb) continue;
+          fxPos.copy(ca.position).add(cb.position).multiplyScalar(0.5);
+          fxPos.y = 1;
+          fx.burst('overtake', fxPos, { count: 8, speed: 20, up: 6, life: 1.1 });
+        }
+      }
+    }
+    prevOrder = order.length ? order : prevOrder;
+    prevPhase = snapshot.phase;
+  }
+
   function addCar(carId, name, slotIndex, serverColor) {
     // Prefer the server-assigned livery color (join order, MCPG-33); fall
     // back to the legacy client palette for pre-change servers.
@@ -157,11 +229,24 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     return color;
   }
 
-  function setCar(carId, s, state) {
+  function setCar(carId, s, state, snapshot = null) {
     const car = cars.get(carId);
     if (!car) return;
     car.state = state;
     const group = car.group;
+
+    // pit-stop FX: the snapshot's pitTimeLeftS only counts down while the
+    // car actually pits, so the first PITTING frame fires once per stop
+    if (state === 'PITTING' && snapshot && snapshot.cars) {
+      const snapCar = snapshot.cars.find((c) => c.id === carId);
+      const t = snapCar?.pitTimeLeftS;
+      if (car.pitFxArmed !== true && t != null && t > 0) {
+        car.pitFxArmed = true;
+        fx.burst('pit', group.position, { count: 12, speed: 12, up: 5, life: 1.2, color: 0xffc53d });
+      }
+    } else if (state !== 'PITTING') {
+      car.pitFxArmed = false;
+    }
     let pos;
     let heading;
     if (state === 'PITTING') {
@@ -183,6 +268,8 @@ export function createSpectatorScene(canvas, trackInfo, def) {
         obj.material.color.set(dim ? 0x3a3f48 : (obj === group.children[0] ? car.color : 0x11141a));
       }
     });
+
+    if (snapshot) detectEvents(snapshot);
   }
 
   function resize() {
@@ -197,6 +284,10 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   }
   resize();
   window.addEventListener('resize', resize);
+
+  function tick(nowMs) {
+    fx.update(nowMs);
+  }
 
   return {
     renderer,
@@ -218,12 +309,14 @@ export function createSpectatorScene(canvas, trackInfo, def) {
         y: (-v.y * 0.5 + 0.5) * renderer.domElement.clientHeight,
       };
     },
+    tick,
     render() {
       renderer.render(scene, camera);
     },
     dispose() {
       window.removeEventListener('resize', resize);
       track.dispose();
+      fx.dispose();
       renderer.dispose();
     },
   };

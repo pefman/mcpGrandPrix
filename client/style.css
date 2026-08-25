@@ -10,6 +10,11 @@
   --amber: #ffb020;
   --purple: #b07cff;
   --red: #ff5470;
+  /* voxel skin (Step 4, MCPG-46): chunky hard-edge borders + offset drop
+   * shadow instead of blur/rounding — the UI reads as part of the diorama */
+  --voxel-radius: 0;
+  --voxel-shadow: 4px 4px 0 rgba(0, 0, 0, 0.4);
+  --voxel-shadow-sm: 3px 3px 0 rgba(0, 0, 0, 0.35);
 }
 
 * { box-sizing: border-box; }
@@ -41,8 +46,9 @@ html, body {
   left: 14px;
   z-index: 10;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
   padding: 10px 14px;
   min-width: 190px;
   backdrop-filter: blur(6px);
@@ -54,7 +60,9 @@ html, body {
   letter-spacing: 0.08em;
   font-size: 12px;
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--voxel-radius);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: var(--voxel-shadow-sm);
   margin-bottom: 8px;
 }
 .phase-setup { background: rgba(139, 149, 167, 0.18); color: var(--muted); }
@@ -84,12 +92,13 @@ html, body {
   align-items: center;
   gap: 8px;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
   padding: 8px 12px;
   backdrop-filter: blur(6px);
 }
-#conn-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+#conn-dot { width: 9px; height: 9px; border-radius: 0; display: inline-block; box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.4); }
 .dot-on { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .dot-retry { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
 .dot-off { background: var(--red); }
@@ -105,8 +114,9 @@ html, body {
   z-index: 10;
   text-align: center;
   background: rgba(20, 32, 54, 0.92);
-  border: 1px solid rgba(77, 163, 255, 0.4);
-  border-radius: 12px;
+  border: 2px solid rgba(77, 163, 255, 0.5);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
   padding: 10px 22px;
   backdrop-filter: blur(6px);
 }
@@ -116,8 +126,8 @@ html, body {
 .sw-car {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  border: 2px solid var(--panel-border);
   color: var(--muted);
   background: rgba(255, 255, 255, 0.04);
 }
@@ -127,7 +137,7 @@ html, body {
   width: 7px;
   height: 7px;
   margin-right: 5px;
-  border-radius: 2px;
+  border-radius: 0;
   vertical-align: baseline;
 }
 
@@ -139,8 +149,9 @@ html, body {
   z-index: 10;
   width: 300px;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
   padding: 8px 0;
   backdrop-filter: blur(6px);
 }
@@ -155,13 +166,13 @@ html, body {
 .lb-row { font-size: 12px; }
 .lb-pos { color: var(--muted); font-weight: 700; }
 .lb-name { display: flex; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; }
-.lb-swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.lb-swatch { width: 9px; height: 9px; border-radius: 0; flex: none; }
 .lb-laps { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .lb-gap { text-align: right; font-variant-numeric: tabular-nums; }
 .lb-row.finished .lb-name { color: var(--muted); }
 .lb-status { font-size: 10px; color: var(--amber); margin-left: 4px; }
-.tire-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.12); margin-top: 3px; overflow: hidden; }
-.tire-fill { height: 100%; border-radius: 2px; }
+.tire-bar { height: 3px; border-radius: 0; background: rgba(255,255,255,0.12); margin-top: 3px; overflow: hidden; }
+.tire-fill { height: 100%; border-radius: 0; }
 
 /* ---------- pending queue (agents waiting for the next race) ---------- */
 #pending-panel {
@@ -171,8 +182,9 @@ html, body {
   z-index: 10;
   width: 300px;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow);
   padding: 8px 0;
   backdrop-filter: blur(6px);
 }
@@ -191,8 +203,9 @@ html, body {
 .overlay-card {
   text-align: center;
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 16px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.5);
   padding: 34px 46px;
   backdrop-filter: blur(8px);
   max-width: 560px;
@@ -215,8 +228,8 @@ html, body {
   gap: 14px;
   padding: 10px 14px;
   background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
 }
 .vote-option-name { font-size: 14px; font-weight: 600; }
 .vote-option-meta { font-size: 11px; color: var(--muted); }
@@ -226,14 +239,16 @@ html, body {
   font-weight: 700;
   color: #fff;
   background: rgba(139, 149, 167, 0.25);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow-sm);
   cursor: pointer;
 }
 .vote-option-btn:hover { filter: brightness(1.2); }
 .vote-option.mine .vote-option-btn {
   background: var(--accent);
   border-color: var(--accent);
+  box-shadow: var(--voxel-shadow-sm);
 }
 .vote-option.mine { border-color: var(--accent); }
 .vote-option-result {
@@ -253,8 +268,8 @@ html, body {
   word-break: break-word;
   color: var(--text);
   background: rgba(0, 0, 0, 0.35);
-  border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
   max-height: 45vh;
   overflow-y: auto;
 }
@@ -265,8 +280,9 @@ html, body {
   font-weight: 600;
   color: #fff;
   background: var(--accent);
-  border: none;
-  border-radius: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow-sm);
   cursor: pointer;
 }
 #copy-harness-prompt:hover { filter: brightness(1.15); }
@@ -299,9 +315,9 @@ html, body {
   font-weight: 700;
   letter-spacing: 0.04em;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: 0;
   background: rgba(8, 10, 14, 0.75);
-  border: 1px solid var(--panel-border);
+  border: 2px solid var(--panel-border);
   white-space: nowrap;
 }
 
@@ -318,8 +334,9 @@ html, body {
   letter-spacing: 0.08em;
   color: var(--accent);
   background: var(--panel);
-  border: 1px solid var(--panel-border);
-  border-radius: 999px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow-sm);
   padding: 5px 12px;
   text-decoration: none;
   backdrop-filter: blur(6px);
