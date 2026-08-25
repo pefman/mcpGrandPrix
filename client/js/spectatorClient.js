@@ -204,67 +204,91 @@ export class SpectatorConnection extends EventTarget {
 }
 
 /**
- * Per-car snapshot buffer for interpolation. The client renders ~150 ms
- * behind the server's clock so it can always interpolate between the two
- * most recent snapshots instead of extrapolating (Leclerc, MCPG-12 Q4).
+ * Per-car snapshot buffer for motion rendering (MCPG-52).
+ *
+ * The sim advances positions in 250 ms ticks while snapshots arrive every
+ * 100 ms, so snapshot positions form a staircase (flat, flat, jump). Lerp
+ * between adjacent snapshots renders that staircase as a stop-and-go pulse.
+ * Instead we extrapolate from a per-car anchor sample at that sample's
+ * `speedMs`: in steady state the rendered position is a straight
+ * constant-velocity line. The anchor is kept until the next-sample clamp
+ * fires — the extrapolation has drifted more than max(10 m, 25% of speed)
+ * from the newest snapshot (corner, pit, DRS) — where it re-anchors to the
+ * fresh baseline. When the feed is stale (>500 ms without a snapshot) the
+ * extrapolation is clamped to 500 ms past the newest sample, so a dead feed
+ * holds the car instead of extrapolating forever.
  */
 export class CarPositionBuffer {
   constructor(trackLengthM) {
     this.trackLengthM = trackLengthM;
-    this.cars = new Map(); // carId -> [{at, s, status}]
+    this.cars = new Map(); // carId -> [{at, s, su, speed, status}]
+    this.anchors = new Map(); // carId -> {at, su, speed}
     this._maxAgeMs = 2000;
+    this._staleHoldMs = 500;
   }
 
   push(snapshot, receivedAt) {
+    const L = this.trackLengthM;
     for (const car of snapshot.cars) {
       let entries = this.cars.get(car.id);
+      let su = car.positionM;
+      if (entries) {
+        const prev = entries[entries.length - 1];
+        if (su < prev.su - L / 2) su += L; // crossed the line since last sample
+        else if (su > prev.su + L / 2) su -= L;
+      }
       if (!entries) {
         entries = [];
         this.cars.set(car.id, entries);
+        this.anchors.set(car.id, { at: receivedAt, su, speed: car.speedMs ?? 0 });
       }
-      entries.push({ at: receivedAt, s: car.positionM, status: car.status });
+      entries.push({ at: receivedAt, s: car.positionM, su, speed: car.speedMs ?? 0, status: car.status });
       const cutoff = receivedAt - this._maxAgeMs;
       while (entries.length > 2 && entries[0].at < cutoff) entries.shift();
     }
     // drop cars that vanished from the snapshot
     const seen = new Set(snapshot.cars.map((c) => c.id));
     for (const id of this.cars.keys()) {
-      if (!seen.has(id)) this.cars.delete(id);
+      if (!seen.has(id)) {
+        this.cars.delete(id);
+        this.anchors.delete(id);
+      }
     }
   }
 
   /**
    * Sample a car's track distance at `renderAt` (client clock, ms).
    * Returns { s, status } or null if the car is unknown.
-   * No extrapolation: before the oldest or after the newest sample, the
-   * nearest sample is returned (cars stay put while the buffer catches up).
+   * Speed-based extrapolation from the car's anchor (see class doc):
+   * next-sample clamp re-anchors, stale feed holds.
    */
   sample(carId, renderAt) {
     const entries = this.cars.get(carId);
     if (!entries || entries.length === 0) return null;
     const L = this.trackLengthM;
-    if (renderAt <= entries[0].at) {
-      const e = entries[0];
-      return { s: e.s, status: e.status };
-    }
     const last = entries[entries.length - 1];
-    if (renderAt >= last.at) return { s: last.s, status: last.status };
-    for (let i = 0; i < entries.length - 1; i += 1) {
-      const a = entries[i];
-      const b = entries[i + 1];
-      if (renderAt >= a.at && renderAt <= b.at) {
-        let sb = b.s;
-        if (sb < a.s - L / 2) sb += L; // crossed the line between samples
-        const t = (renderAt - a.at) / Math.max(1e-6, b.at - a.at);
-        let s = a.s + (sb - a.s) * t;
-        if (s >= L) s -= L;
-        return { s, status: b.status };
-      }
+    let anchor = this.anchors.get(carId);
+    if (!anchor) {
+      anchor = { at: last.at, su: last.su, speed: last.speed };
+      this.anchors.set(carId, anchor);
     }
-    return { s: last.s, status: last.status };
+    // Next-sample clamp: extrapolation drifted past the tolerance from the
+    // newest snapshot -> the speed changed, re-anchor to the fresh baseline.
+    const drifted = anchor.su + (anchor.speed * (last.at - anchor.at)) / 1000 - last.su;
+    const tol = Math.max(10, Math.abs(anchor.speed) * 0.25);
+    if (Math.abs(drifted) > tol) {
+      anchor = { at: last.at, su: last.su, speed: last.speed };
+      this.anchors.set(carId, anchor);
+    }
+    // Stale hold: never extrapolate more than _staleHoldMs past the feed.
+    const t = Math.min(renderAt, last.at + this._staleHoldMs);
+    const tt = Math.max(t, anchor.at); // before the first sample: stay put
+    const s = ((anchor.su + (anchor.speed * (tt - anchor.at)) / 1000) % L + L) % L;
+    return { s, status: last.status };
   }
 
   clear() {
     this.cars.clear();
+    this.anchors.clear();
   }
 }
