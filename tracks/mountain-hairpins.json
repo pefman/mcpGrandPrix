@@ -15,31 +15,32 @@
   ],
   "water": [],
   "theme": {
-    "sky": "#9fc3e0",
+    "sky": "#7fb5ea",
     "ground": {
-      "base": "#7f9d63",
-      "spot": "#74925a",
+      "base": "#58b649",
+      "spot": "#4aa43e",
+      "patch": "#3c9033",
       "tileM": 6
     },
     "road": {
-      "base": "#4c5058",
-      "spot": "#454850",
+      "base": "#4a4f5e",
+      "spot": "#454a57",
       "tileM": 3
     },
     "curb": {
-      "red": "#d9463c",
-      "white": "#efefef"
+      "red": "#e8362e",
+      "white": "#fdf6e8"
     },
-    "pit": "#7d8494",
+    "pit": "#8b94a8",
     "barriers": true,
     "ambient": {
-      "sky": "#cfe4f5",
-      "ground": "#6d8a54",
-      "intensity": 0.7
+      "sky": "#d9ecff",
+      "ground": "#4a8f3c",
+      "intensity": 0.75
     },
     "sun": {
       "color": "#fff6e0",
-      "intensity": 0.95
+      "intensity": 1.0
     }
   },
   "props": [

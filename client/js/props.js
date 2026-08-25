@@ -21,22 +21,22 @@ function place(m, x = 0, z = 0) {
   return m;
 }
 
-const BUILDING_COLORS = [0x3d4458, 0x4a4260, 0x333a4e, 0x55496b, 0x2f3547];
+const BUILDING_COLORS = [0x2c3350, 0x3a3158, 0x252c44, 0x453a66, 0x232a3e];
 
 const BUILDERS = {
   palm(p, g, rng) {
     const h = p.h ?? rng.int(6, 9);
-    g.add(box(1.2, h, 1.2, 0x8a6a44, h / 2));
-    g.add(box(7, 1.2, 2.6, 0x3f8f52, h + 0.2));
-    g.add(box(2.6, 1.2, 7, 0x47985a, h + 0.2));
-    g.add(box(4.4, 1, 4.4, 0x57a866, h + 1.2));
+    g.add(box(1.2, h, 1.2, 0x9a6f42, h / 2));
+    g.add(box(7, 1.2, 2.6, 0x1e9e56, h + 0.2));
+    g.add(box(2.6, 1.2, 7, 0x27ac62, h + 0.2));
+    g.add(box(4.4, 1, 4.4, 0x34c474, h + 1.2));
   },
 
   pine(p, g, rng) {
     // base at y=0 so the uniform scale keeps the trunk on the ground
-    g.add(place(box(1, 2.4, 1, 0x6b4f33, 1.2)));
-    g.add(place(box(4.6, 3, 4.6, 0x2f6b45, 4.1)));
-    g.add(place(box(3, 2.6, 3, 0x3a7a50, 6.7)));
+    g.add(place(box(1, 2.4, 1, 0x7a5636, 1.2)));
+    g.add(place(box(4.6, 3, 4.6, 0x2e7d4a, 4.1)));
+    g.add(place(box(3, 2.6, 3, 0x3d9758, 6.7)));
     g.scale.setScalar(0.85 + rng.next() * 0.5);
   },
 
@@ -46,7 +46,7 @@ const BUILDERS = {
     const d = p.d ?? 24;
     const h = p.h ?? 40;
     const color = p.color ?? BUILDING_COLORS[(Math.abs(Math.round(p.x)) * 31 + Math.abs(Math.round(p.z)) * 17) % BUILDING_COLORS.length];
-    const win = 0xffcf8a;
+    const win = 0xffd98a;
     g.add(box(w, h, d, color, h / 2));
     const t = 0.3;
     g.add(place(box(w * 0.72, h * 0.6, t, win, h * 0.55, { basic: true }), 0, d / 2 + t / 2));
@@ -64,36 +64,36 @@ const BUILDERS = {
     const w = p.w ?? 30;
     const d = p.d ?? 12;
     const h = p.h ?? 8;
-    g.add(box(w, 1.2, d, 0x8f95a3, 0.6));
+    g.add(box(w, 1.2, d, 0x9aa1b2, 0.6));
     for (let i = 0; i < 3; i++) {
-      g.add(place(box(w, 1.4, d * 0.28, 0x767e8f, 1.7 + i * 1.4), 0, -d * 0.24 - i * d * 0.28));
+      g.add(place(box(w, 1.4, d * 0.28, 0x8088a0, 1.7 + i * 1.4), 0, -d * 0.24 - i * d * 0.28));
     }
-    g.add(box(w, 0.7, d + 3, 0x2e3340, h));
-    g.add(place(box(0.8, h - 0.4, 0.8, 0x2e3340, (h - 0.4) / 2 + 0.4), -w / 2 + 2, d / 2 - 1));
-    g.add(place(box(0.8, h - 0.4, 0.8, 0x2e3340, (h - 0.4) / 2 + 0.4), w / 2 - 2, d / 2 - 1));
+    g.add(box(w, 0.7, d + 3, 0x2f3542, h));
+    g.add(place(box(0.8, h - 0.4, 0.8, 0x2f3542, (h - 0.4) / 2 + 0.4), -w / 2 + 2, d / 2 - 1));
+    g.add(place(box(0.8, h - 0.4, 0.8, 0x2f3542, (h - 0.4) / 2 + 0.4), w / 2 - 2, d / 2 - 1));
   },
 
   rock(p, g, rng) {
     const s = 0.8 + rng.next() * 0.6;
     const rock = new THREE.Group();
-    rock.add(box(5, 3, 5, 0x7d8087, 1.5));
-    rock.add(place(box(2.6, 1.8, 2.6, 0x8a8d94, 3.6), 0.8, 0.4));
+    rock.add(box(5, 3, 5, 0x83868e, 1.5));
+    rock.add(place(box(2.6, 1.8, 2.6, 0x91949c, 3.6), 0.8, 0.4));
     rock.scale.setScalar(s);
     g.add(rock);
   },
 
   boat(p, g) {
-    g.add(box(6, 1.1, 2.4, 0xe8e4da, 0.9));
-    g.add(box(5.6, 0.3, 2, 0xd94f3d, 1.6));
+    g.add(box(6, 1.1, 2.4, 0xf4f0e6, 0.9));
+    g.add(box(5.6, 0.3, 2, 0xe0453a, 1.6));
     g.add(place(box(1.8, 1.1, 1.6, 0xffffff, 2.3), -1, 0));
-    g.add(place(box(0.3, 3, 0.3, 0x8a6a44, 3.2), 1.8, 0));
+    g.add(place(box(0.3, 3, 0.3, 0x9a6f42, 3.2), 1.8, 0));
   },
 
   /** Street lamp. The arm points local +x; scatter sets rot to face the road. */
   lamp(p, g) {
-    g.add(box(0.5, 6.5, 0.5, 0x394050, 3.25));
-    g.add(place(box(1.6, 0.4, 0.4, 0x394050, 6.4), 0.5, 0));
-    g.add(place(box(0.9, 0.5, 0.9, 0xffe9a3, 6.1, { basic: true }), 1.0, 0));
+    g.add(box(0.5, 6.5, 0.5, 0x3a4152, 3.25));
+    g.add(place(box(1.6, 0.4, 0.4, 0x3a4152, 6.4), 0.5, 0));
+    g.add(place(box(0.9, 0.5, 0.9, 0xffdf96, 6.1, { basic: true }), 1.0, 0));
   },
 };
 

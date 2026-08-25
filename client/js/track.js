@@ -171,14 +171,17 @@ function curbRuns(curve, arclen, lengthM, threshold = 0.021, minRunM = CURB_MIN_
 
 /**
  * Build the full visual track for a def. Returns
- * { group, pointAt(s), tangentAt(s), pitBoxes, bbox, theme, def, dispose() }.
+ * { group, pointAt(s), tangentAt(s), pitBoxes, bbox, theme, def, ground,
+ *   groundSize, size, dispose() }. Pass opts.shadows to flag prop meshes
+ * (cast) and the ground floor (receive) for the scene's shadow camera.
  */
-export function buildTrack(scene, trackInfo, def) {
+export function buildTrack(scene, trackInfo, def, opts = {}) {
   const group = new THREE.Group();
   const lengthM = trackInfo.lengthM ?? def.lengthM;
   const roadWidthM = def.roadWidthM;
   const theme = def.theme;
   const rng = createRng(99);
+  const shadowsOn = !!opts.shadows;
 
   const curve = createTrackCurve(def, lengthM);
   const arclen = curve.getLength();
@@ -189,15 +192,20 @@ export function buildTrack(scene, trackInfo, def) {
   // ---- ground plane, sized once the bbox is known (see below) so the
   // theme sky stays visible around the circuit's edge
   const groundTex = makeGroundTexture(theme);
-  const ground = new THREE.Mesh(
+  // ground is a (tiny) group: it carries the sized floor mesh AND the
+  // diorama island slab under it (Step 2, MCPG-44) — one unit to size,
+  // place, traverse and dispose
+  const ground = new THREE.Group();
+  const groundFloor = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
     new THREE.MeshLambertMaterial({ map: groundTex }),
   );
-  ground.rotation.x = -Math.PI / 2;
+  groundFloor.rotation.x = -Math.PI / 2;
   // 2 m below the road: at the spectator camera's shallow angle the road
   // surface sweeps ~0.4 m of depth per screen pixel, so separations must
   // exceed that or the surfaces z-fight
-  ground.position.y = -2;
+  groundFloor.position.y = -2;
+  ground.add(groundFloor);
   group.add(ground);
 
   // ---- road (overlays sit >0.6 m above it, beyond the per-pixel depth
@@ -314,7 +322,15 @@ export function buildTrack(scene, trackInfo, def) {
     samples.push({ x: p.x, z: p.z });
   }
   const scattered = scatterProps(def, samples, roadWidthM, waterCircles);
-  group.add(buildProps((def.props ?? []).concat(scattered), rng));
+  const propsGroup = buildProps((def.props ?? []).concat(scattered), rng);
+  group.add(propsGroup);
+  if (shadowsOn) {
+    // only props cast: road/curb/pit overlays stay shadow-free (cheap and
+    // no self-shadowing artifacts on the centimetre-scale layered road)
+    propsGroup.traverse((o) => {
+      if (o.isMesh) o.castShadow = true;
+    });
+  }
 
   // ---- bounding box (track only, ground excluded) with generous margin
   const bbox = new THREE.Box3();
@@ -325,21 +341,45 @@ export function buildTrack(scene, trackInfo, def) {
   }
   // keep the ground plane centered on the circuit, not on the world origin
   const trackCenter = bbox.getCenter(new THREE.Vector3());
-  ground.position.set(trackCenter.x, -2, trackCenter.z);
+  ground.position.set(trackCenter.x, 0, trackCenter.z);
   const GROUND_MARGIN_M = 160; // of sky beyond the circuit on every side
   const gsize = bbox.getSize(new THREE.Vector3());
+  const groundSize = {
+    x: gsize.x + 2 * GROUND_MARGIN_M,
+    z: gsize.z + 2 * GROUND_MARGIN_M,
+  };
   // PlaneGeometry lies in local XY (normal +Z); after rotation.x = -PI/2
   // local Y becomes world -Z, so the floor's DEPTH goes in scale.y —
   // scale.z only stretches the (zero) thickness
-  ground.scale.set(
-    gsize.x + 2 * GROUND_MARGIN_M,
-    gsize.z + 2 * GROUND_MARGIN_M,
-    1,
-  );
+  groundFloor.scale.set(groundSize.x, groundSize.z, 1);
   groundTex.repeat.set(
-    (gsize.x + 2 * GROUND_MARGIN_M) / theme.ground.tileM,
-    (gsize.z + 2 * GROUND_MARGIN_M) / theme.ground.tileM,
+    groundSize.x / theme.ground.tileM,
+    groundSize.z / theme.ground.tileM,
   );
+  if (shadowsOn) groundFloor.receiveShadow = true;
+
+  // ---- diorama island slab under the floor (Step 2, MCPG-44)
+  // Two stacked boxes (not an ExtrudeGeometry skirt): one mesh-pair, hard
+  // voxel silhouette. A slightly wider top lip (dirt) sits on a narrower,
+  // darker bottom (rock) — the floating-tabletop read.
+  const ISLAND_H = 16;
+  const island = new THREE.Group();
+  const dirt = new THREE.Color(theme.ground.base).offsetHSL(0, 0.02, -0.14);
+  const rock = new THREE.Color(theme.ground.base).offsetHSL(0, 0.05, -0.32);
+  const topLip = new THREE.Mesh(
+    new THREE.BoxGeometry(groundSize.x + 12, ISLAND_H * 0.45, groundSize.z + 12),
+    new THREE.MeshLambertMaterial({ color: dirt }),
+  );
+  topLip.position.y = ISLAND_H * 0.45 / 2;
+  const bottomRock = new THREE.Mesh(
+    new THREE.BoxGeometry(groundSize.x - 4, ISLAND_H * 0.55, groundSize.z - 4),
+    new THREE.MeshLambertMaterial({ color: rock }),
+  );
+  bottomRock.position.y = -ISLAND_H * 0.55 / 2;
+  island.add(topLip, bottomRock);
+  // the floor sits at local y=-2 inside `ground`; island top just below it
+  island.position.y = -2 - ISLAND_H / 2 + 0.4;
+  ground.add(island);
   bbox.expandByScalar(roadWidthM / 2 + 28);
   // tall props (city towers) project above the flat circuit bbox —
   // lift the top so the camera fit keeps them in frame
@@ -359,5 +399,19 @@ export function buildTrack(scene, trackInfo, def) {
     });
   }
 
-  return { group, pointAt, tangentAt, pitBoxes, bbox, theme, def, dispose };
+  return {
+    group,
+    pointAt,
+    tangentAt,
+    pitBoxes,
+    bbox,
+    theme,
+    def,
+    // exposed for scene.js (Step 2, MCPG-44): island slab + shadow setup
+    ground,
+    groundSize,
+    groundCenter: trackCenter,
+    size: gsize,
+    dispose,
+  };
 }

@@ -25,13 +25,13 @@ export const LEGACY_DEF = {
   scatter: null,
   theme: {
     sky: '#0b1018',
-    ground: { base: '#10141b', spot: '#151b24', tileM: 6 },
-    road: { base: '#232a35', spot: '#1d232d', tileM: 3 },
-    curb: { red: '#e0453f', white: '#f2f5f9' },
-    pit: '#2e3644',
+    ground: { base: '#16202c', spot: '#1c2836', patch: '#101923', tileM: 6 },
+    road: { base: '#2e3747', spot: '#28303e', tileM: 3 },
+    curb: { red: '#e8362e', white: '#fdf6e8' },
+    pit: '#374152',
     barriers: false,
-    ambient: { sky: '#56708c', ground: '#10141b', intensity: 1.0 },
-    sun: { color: '#8fa8ff', intensity: 0.9 },
+    ambient: { sky: '#6f88b0', ground: '#141c28', intensity: 1.0 },
+    sun: { color: '#9fb4ff', intensity: 0.95 },
   },
 };
 

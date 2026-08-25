@@ -18,33 +18,34 @@
     }
   ],
   "theme": {
-    "sky": "#79c4ef",
+    "sky": "#5ecdf6",
     "ground": {
-      "base": "#e7d3a1",
-      "spot": "#dcc48f",
+      "base": "#f6de9a",
+      "spot": "#e3c276",
+      "patch": "#d3ab5e",
       "tileM": 6
     },
     "road": {
-      "base": "#5b5f69",
-      "spot": "#535761",
+      "base": "#4a4f5e",
+      "spot": "#454a57",
       "tileM": 3
     },
     "curb": {
-      "red": "#e2483d",
-      "white": "#f4f4f4",
+      "red": "#e8362e",
+      "white": "#fdf6e8",
       "threshold": 0.012
     },
-    "water": "#2fb8bd",
-    "pit": "#838a97",
+    "water": "#19b8c9",
+    "pit": "#98a0b0",
     "barriers": true,
     "ambient": {
-      "sky": "#cdeaff",
-      "ground": "#e0c893",
-      "intensity": 0.7
+      "sky": "#d8f4ff",
+      "ground": "#e8cf8e",
+      "intensity": 0.75
     },
     "sun": {
       "color": "#fff3d6",
-      "intensity": 0.95
+      "intensity": 1.0
     }
   },
   "props": [
