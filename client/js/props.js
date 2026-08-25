@@ -1,7 +1,7 @@
 /**
  * Box-built props (MCPG-27): palms, pines, city blocks, grandstand, rocks,
- * boats, street lamps — plus seeded scatter placement so each track's
- * scenery is identical on every load.
+ * boats, street lamps, sponsor signs (MCPG-45) — plus seeded scatter
+ * placement so each track's scenery is identical on every load.
  */
 import * as THREE from 'three';
 import { createRng } from './rng.js';
@@ -94,6 +94,19 @@ const BUILDERS = {
     g.add(box(0.5, 6.5, 0.5, 0x3a4152, 3.25));
     g.add(place(box(1.6, 0.4, 0.4, 0x3a4152, 6.4), 0.5, 0));
     g.add(place(box(0.9, 0.5, 0.9, 0xffdf96, 6.1, { basic: true }), 1.0, 0));
+  },
+
+  /**
+   * Roadside sponsor sign: post + panel. Model convention: the panel faces
+   * local +z; track defs set `rot` to face the road. `color` tints the
+   * panel (sponsor brand); defaults to the amber used by the pit FX.
+   */
+  sign(p, g) {
+    const w = p.w ?? 8;
+    const h = p.h ?? 5;
+    const ph = Math.min(2.2, h * 0.45); // panel height
+    g.add(box(0.8, h, 0.8, 0x3a4152, h / 2));
+    g.add(box(w, ph, 0.7, p.color ?? 0xffc53d, h - 0.3 - ph / 2));
   },
 };
 
