@@ -40,9 +40,11 @@
 #                     + `up -d`), error, exit 1. $VPS_STATE_FILE not updated.
 #
 # "healthy" = curl $HEALTH_URL (checked ON the VPS) returns 2xx AND the
-# compose `server` container is running. A finished race exiting 0 and the
-# server being auto-restarted by its restart policy is a normal, healthy
-# state.
+# compose `server` container is running AND the prod client root
+# ($CLIENT_HEALTH_URL, the client service's static-serve GET /) returns 2xx
+# (MCPG-53: without the client check a prod client that dies between deploys
+# is invisible to this watchdog). A finished race exiting 0 and the server
+# being auto-restarted by its restart policy is a normal, healthy state.
 #
 # Config (all env-overridable; defaults match the live VPS layout):
 #   SSH_TARGET       VPS ssh target                       (default: pefman@192.168.1.14)
@@ -55,6 +57,8 @@
 #                    docker-compose.yml ${VAR} substitution via --env-file;
 #                    skipped silently if the file is missing (default: /opt/mcgp/.env)
 #   HEALTH_URL       health endpoint, checked ON the VPS  (default: http://localhost:3080/healthz)
+#   CLIENT_HEALTH_URL prod client root (static-serve GET /), checked ON the
+#                     VPS (default: http://localhost:8080/)
 #   HEALTH_TIMEOUT_S max seconds to wait for a healthy stack (default: 60)
 #   CANARY_HTTP_PORT canary server host port (default: 3180)
 #   CANARY_CLIENT_PORT canary client host port (default: 8180)
@@ -74,6 +78,7 @@ VPS_APP_DIR="${VPS_APP_DIR:-/opt/mcgp/app}"
 VPS_STATE_FILE="${VPS_STATE_FILE:-/opt/mcgp/DEPLOYED_SHA}"
 VPS_ENV_FILE="${VPS_ENV_FILE:-/opt/mcgp/.env}"
 HEALTH_URL="${HEALTH_URL:-http://localhost:3080/healthz}"
+CLIENT_HEALTH_URL="${CLIENT_HEALTH_URL:-http://localhost:8080/}"
 HEALTH_TIMEOUT_S="${HEALTH_TIMEOUT_S:-60}"
 CANARY_HTTP_PORT="${CANARY_HTTP_PORT:-3180}"
 CANARY_CLIENT_PORT="${CANARY_CLIENT_PORT:-8180}"
@@ -113,17 +118,22 @@ vps_health_url() {
   vps "curl -fsS -m 5 -o /dev/null '$1'"
 }
 
-# Health check, executed ON the VPS: $HEALTH_URL must answer 2xx AND the
-# compose `server` container must be running. No output; exit code is the verdict.
+# Health check, executed ON the VPS: $HEALTH_URL must answer 2xx, the
+# compose `server` container must be running, and the client root
+# ($CLIENT_HEALTH_URL) must answer 2xx — the client service's own healthcheck
+# (docker-compose.yml, MCPG-53) is Docker observability only; this is what
+# makes the 3-hourly watchdog act on a dead prod client. No output; exit
+# code is the verdict.
 vps_health() {
   vps_health_url "$HEALTH_URL" || return 1
-  vps bash -s -- "$VPS_APP_DIR" <<'VPS_HEALTH'
+  vps bash -s -- "$VPS_APP_DIR" <<'VPS_HEALTH' || return 1
 set -u
 appdir="$1"
 cid="$(docker compose -f "$appdir/docker-compose.yml" ps -q server 2>/dev/null | head -n 1 || true)"
 [ -n "$cid" ] || exit 1
 [ "$(docker inspect -f '{{.State.Running}}' "$cid")" = "true" ]
 VPS_HEALTH
+  vps_health_url "$CLIENT_HEALTH_URL"
 }
 
 # Wait up to HEALTH_TIMEOUT_S seconds for the stack to become healthy (3 s apart).

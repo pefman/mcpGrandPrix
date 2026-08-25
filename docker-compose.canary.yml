@@ -46,6 +46,16 @@ services:
   client:
     image: mcp-grand-prix:latest
     command: ["node", "src/server/staticServe.js", "/app/client", "8080"]
+    # Override the image-level HEALTHCHECK (Dockerfile, which probes :3080/
+    # healthz — nothing listens there inside the client container, so the
+    # inherited probe reports unhealthy forever, MCPG-53): the canary client
+    # is healthy when its static server answers GET / on 8080.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
     ports:
       - "${CANARY_CLIENT_PORT:-8180}:8080"
     restart: "no"
