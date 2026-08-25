@@ -5,6 +5,20 @@
  */
 import * as THREE from 'three';
 import { createRng } from './rng.js';
+import { makeWindowsTexture } from './pixelTextures.js';
+
+// one base window-grid texture per wall color (16x16, shared image);
+// each facade clones it with its own repeat
+const windowsTexCache = new Map();
+function windowsTextureFor(wallHex) {
+  let tex = windowsTexCache.get(wallHex);
+  if (!tex) {
+    const seed = [...wallHex].reduce((a, ch, i) => a + ch.charCodeAt(0) * (i + 7), 0);
+    tex = makeWindowsTexture({ wall: wallHex, seed });
+    windowsTexCache.set(wallHex, tex);
+  }
+  return tex;
+}
 
 function box(w, h, d, color, y = 0, { basic = false } = {}) {
   const mat = basic
@@ -21,7 +35,10 @@ function place(m, x = 0, z = 0) {
   return m;
 }
 
-const BUILDING_COLORS = [0x2c3350, 0x3a3158, 0x252c44, 0x453a66, 0x232a3e];
+// Step 5 (MCPG-47): night-readable slate tones. The city towers are lit by
+// the dim moon (Lambert / PI), so dark albedos rendered as near-black
+// silhouettes that vanished into the sky; mid-slate reads as a city.
+const BUILDING_COLORS = [0x8a90a8, 0x7d8399, 0x979db4, 0x737990, 0x848aa2];
 
 const BUILDERS = {
   palm(p, g, rng) {
@@ -40,19 +57,37 @@ const BUILDERS = {
     g.scale.setScalar(0.85 + rng.next() * 0.5);
   },
 
-  /** City block: tower + unlit window strips (+ optional neon roof band). */
+  /**
+   * City block: tower + pixel window-grid facades (+ optional neon roof
+   * band). Step 5 (MCPG-47): solid glow strips became a mixed lit/unlit
+   * window grid (makeWindowsTexture) so towers read as a city; the facade
+   * tiles are MeshBasicMaterial, so the glow stays unlit and cheap.
+   */
   building(p, g, rng) {
     const w = p.w ?? 24;
     const d = p.d ?? 24;
     const h = p.h ?? 40;
     const color = p.color ?? BUILDING_COLORS[(Math.abs(Math.round(p.x)) * 31 + Math.abs(Math.round(p.z)) * 17) % BUILDING_COLORS.length];
-    const win = 0xffd98a;
+    const base = windowsTextureFor(`#${new THREE.Color(color).getHexString()}`);
     g.add(box(w, h, d, color, h / 2));
     const t = 0.3;
-    g.add(place(box(w * 0.72, h * 0.6, t, win, h * 0.55, { basic: true }), 0, d / 2 + t / 2));
-    g.add(place(box(w * 0.72, h * 0.6, t, win, h * 0.55, { basic: true }), 0, -d / 2 - t / 2));
-    g.add(place(box(t, h * 0.6, d * 0.72, win, h * 0.55, { basic: true }), w / 2 + t / 2, 0));
-    g.add(place(box(t, h * 0.6, d * 0.72, win, h * 0.55, { basic: true }), -w / 2 - t / 2, 0));
+    const facade = (sx, sz, x, z) => {
+      const tex = base.clone(); // per-facade repeat, shared 16x16 image
+      tex.repeat.set(
+        Math.max(1, Math.round(Math.max(sx, sz) / 12)), // one tile ~ 12 m -> ~3 m windows
+        Math.max(1, Math.round((h * 0.6) / 12)),
+      );
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(sx, h * 0.6, sz),
+        new THREE.MeshBasicMaterial({ map: tex }),
+      );
+      m.position.set(x, h * 0.55, z);
+      g.add(m);
+    };
+    facade(w * 0.72, t, 0, d / 2 + t / 2);
+    facade(w * 0.72, t, 0, -d / 2 - t / 2);
+    facade(t, d * 0.72, w / 2 + t / 2, 0);
+    facade(t, d * 0.72, -w / 2 - t / 2, 0);
     if (p.neon) g.add(box(w + 0.6, 0.8, d + 0.6, p.neon, h + 0.4, { basic: true }));
   },
 
@@ -89,11 +124,15 @@ const BUILDERS = {
     g.add(place(box(0.3, 3, 0.3, 0x9a6f42, 3.2), 1.8, 0));
   },
 
-  /** Street lamp. The arm points local +x; scatter sets rot to face the road. */
+  /**
+   * Street lamp. The arm points local +x; scatter sets rot to face the
+   * road. Step 5 (MCPG-47): pole/arm thickened ~3x so the lamps read at
+   * diorama distance instead of vanishing into the buildings.
+   */
   lamp(p, g) {
-    g.add(box(0.5, 6.5, 0.5, 0x3a4152, 3.25));
-    g.add(place(box(1.6, 0.4, 0.4, 0x3a4152, 6.4), 0.5, 0));
-    g.add(place(box(0.9, 0.5, 0.9, 0xffdf96, 6.1, { basic: true }), 1.0, 0));
+    g.add(box(1.6, 6.5, 1.6, 0x3a4152, 3.25));
+    g.add(place(box(2.4, 0.6, 1.0, 0x3a4152, 6.2), 0.8, 0));
+    g.add(place(box(1.5, 0.7, 1.5, 0xffdf96, 5.9, { basic: true }), 1.7, 0));
   },
 
   /**

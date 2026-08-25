@@ -225,6 +225,9 @@ export class CarPositionBuffer {
     this.anchors = new Map(); // carId -> {at, su, speed}
     this._maxAgeMs = 2000;
     this._staleHoldMs = 500;
+    // shared result (Step 5, MCPG-47: the render loop samples every car
+    // every frame) — callers must read it before the next sample() call
+    this._out = { s: 0, status: null };
   }
 
   push(snapshot, receivedAt) {
@@ -265,6 +268,7 @@ export class CarPositionBuffer {
   sample(carId, renderAt) {
     const entries = this.cars.get(carId);
     if (!entries || entries.length === 0) return null;
+    const out = this._out; // shared result — caller reads it before the next sample()
     const L = this.trackLengthM;
     const last = entries[entries.length - 1];
     let anchor = this.anchors.get(carId);
@@ -283,8 +287,9 @@ export class CarPositionBuffer {
     // Stale hold: never extrapolate more than _staleHoldMs past the feed.
     const t = Math.min(renderAt, last.at + this._staleHoldMs);
     const tt = Math.max(t, anchor.at); // before the first sample: stay put
-    const s = ((anchor.su + (anchor.speed * (tt - anchor.at)) / 1000) % L + L) % L;
-    return { s, status: last.status };
+    out.s = ((anchor.su + (anchor.speed * (tt - anchor.at)) / 1000) % L + L) % L;
+    out.status = last.status;
+    return out;
   }
 
   clear() {

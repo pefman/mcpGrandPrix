@@ -143,14 +143,16 @@ function frame() {
   const renderAt = now - RENDER_DELAY_MS;
 
   if (buffer && lastSnapshot) {
-    const carsById = new Map(lastSnapshot.cars.map((c) => [c.id, c]));
-    const mmCars = [];
+    const mmCars = []; // minimap (MCPG-31); the cars array is scanned with
+                       // find() below — no per-frame Map (Step 5, MCPG-47)
     for (const carId of scene.carIds()) {
       const smp = buffer.sample(carId, renderAt);
       if (!smp) continue;
       // lastSnapshot drives race-moment FX (overtake/start/finish/pit, MCPG-46)
       scene.setCar(carId, smp.s, smp.status, lastSnapshot);
-      const car = carsById.get(carId);
+      // find() instead of a per-frame Map (Step 5, MCPG-47: no hot-path
+      // allocations; 4-8 cars make the scan cheaper than building a Map)
+      const car = lastSnapshot.cars.find((c) => c.id === carId);
       const extra = smp.status === 'PITTING' && car ? `PIT ${car.pitTimeLeftS?.toFixed(0)}s` : '';
       ui.placeLabel(carId, carNameById[carId] ?? carId, scene.labelScreenPos(carId), extra);
       // minimap (MCPG-31): same world spot the 3D view is showing right now
@@ -158,6 +160,7 @@ function frame() {
       if (wp) mmCars.push({ x: wp.x, z: wp.z, color: carColorById[carId] || '#888', status: smp.status });
     }
     minimap?.draw(mmCars);
+    ui.layoutLabels(); // stack any overlapping labels (grid, tight battles)
   } else {
     minimap?.draw([]); // outline only while the buffer is empty
   }
@@ -174,6 +177,9 @@ async function init(snapshotMsg) {
   scene = createSpectatorScene(canvas, snapshotMsg.track, def);
   // 2D circuit minimap (MCPG-31), fed from scene.track.map (same curve as 3D)
   minimap = createMinimap(document.getElementById('minimap'), scene.track.map);
+  // documented debug/automation handle (like __mcpGpHello): visual tools
+  // read camera + track fit state from here (Step 5, MCPG-47)
+  window.__mcpGpScene = scene;
   ui.setTrack(def.name);
   registerKnownCars();
 }
