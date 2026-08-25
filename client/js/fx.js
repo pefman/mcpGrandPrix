@@ -21,24 +21,28 @@ import * as THREE from 'three';
 
 const MAX_PARTICLES = 256;
 
-// effect palettes — saturated, toy-box colors that pop on any theme
-const PALETTES = {
-  overtake: [0xffffff, 0xffe066, 0x7de8ff],
-  pit: [0xffc53d, 0xffffff, 0x37e08d],
-  start: [0x37e08d, 0xffe066, 0xffffff],
-  finish: [0xffe066, 0xffffff, 0xff2d55, 0x7de8ff, 0x37e08d],
-};
-
 /**
  * Returns an effect system attached to `scene`.
  *   fx.burst(kind, pos, opts)   spawn a one-shot burst at a world position
  *   fx.update(nowMs)            advance particles (call once per frame)
  *   fx.dispose()                free the instanced mesh
  * `pos` must be a long-lived THREE.Vector3 (it is copied).
+ *
+ * `theme.fxAccent` (optional, Step 5 MCPG-47): swap the default cyan pop
+ * for a theme-appropriate neon — the night city uses warm amber so the
+ * bursts read as light against the dark towers.
  */
-export function createFx(scene) {
+export function createFx(scene, theme = {}) {
+  // effect palettes — saturated, toy-box colors that pop on any theme
+  const accent = new THREE.Color(theme.fxAccent ?? 0x7de8ff);
+  const PALETTES = {
+    overtake: [0xffffff, 0xffe066, accent],
+    pit: [0xffc53d, 0xffffff, 0x37e08d],
+    start: [0x37e08d, 0xffe066, 0xffffff],
+    finish: [0xffe066, 0xffffff, 0xff2d55, accent, 0x37e08d],
+  };
   const geo = new THREE.BoxGeometry(1, 1, 1);
-  const mat = new THREE.MeshBasicMaterial({ vertexColors: false, toneMapped: false });
+  const mat = new THREE.MeshBasicMaterial();
   const mesh = new THREE.InstancedMesh(geo, mat, MAX_PARTICLES);
   mesh.count = 0;
   mesh.frustumCulled = false; // particles span the whole track
@@ -113,6 +117,9 @@ export function createFx(scene) {
   function update(nowMs) {
     const dt = last < 0 ? 0 : Math.min(0.1, (nowMs - last) / 1000);
     last = nowMs;
+    // horizontal air drag (Step 5, MCPG-47): bursts decelerate instead of
+    // drifting linearly — softer, more confetti-like
+    const drag = Math.exp(-1.8 * dt);
 
     for (const p of live) {
       p.life -= dt;
@@ -122,15 +129,18 @@ export function createFx(scene) {
         continue;
       }
       p.vy -= p.gravity * dt;
+      p.vx *= drag;
+      p.vz *= drag;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       p.z += p.vz * dt;
       if (p.y < 0.4) { p.y = 0.4; p.vy = 0; p.vx *= 0.85; p.vz *= 0.85; } // settle on the road
       _e.set(0, 0, 0);
       p.q.setFromAxisAngle(p.axis, p.spin * p.maxLife * (1 - p.life / p.maxLife));
-      // shrink out during the last third of life
+      // pop in over the first twelfth of life, shrink out during the last third
       const t = p.life / p.maxLife;
-      const s = p.size * (t < 0.35 ? t / 0.35 : 1);
+      const pop = (1 - t) < 0.12 ? 0.5 + 0.5 * ((1 - t) / 0.12) : 1;
+      const s = p.size * (t < 0.35 ? t / 0.35 : 1) * pop;
       p.pos.set(p.x, p.y, p.z);
       _s.set(s, s, s);
       p.mat4.compose(p.pos, p.q, _s);

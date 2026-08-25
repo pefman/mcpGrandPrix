@@ -360,19 +360,22 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
 
   // ---- diorama island slab under the floor (Step 2, MCPG-44)
   // Two stacked boxes (not an ExtrudeGeometry skirt): one mesh-pair, hard
-  // voxel silhouette. A slightly wider top lip (dirt) sits on a narrower,
-  // darker bottom (rock) — the floating-tabletop read.
-  const ISLAND_H = 16;
+  // voxel silhouette. A wider top lip (dirt) sits on a narrower, darker
+  // bottom (rock) — the floating-tabletop read. Step 5 (MCPG-47): the slab
+  // is a touch chunkier (22 m tall, wider lip) because the camera now fits
+  // the WHOLE island in frame, so the base rim is the intended look.
+  const ISLAND_H = 22;
+  const ISLAND_LIP = 16; // top-lip overhang beyond the floor, per side
   const island = new THREE.Group();
   const dirt = new THREE.Color(theme.ground.base).offsetHSL(0, 0.02, -0.14);
   const rock = new THREE.Color(theme.ground.base).offsetHSL(0, 0.05, -0.32);
   const topLip = new THREE.Mesh(
-    new THREE.BoxGeometry(groundSize.x + 12, ISLAND_H * 0.45, groundSize.z + 12),
+    new THREE.BoxGeometry(groundSize.x + ISLAND_LIP, ISLAND_H * 0.45, groundSize.z + ISLAND_LIP),
     new THREE.MeshLambertMaterial({ color: dirt }),
   );
   topLip.position.y = ISLAND_H * 0.45 / 2;
   const bottomRock = new THREE.Mesh(
-    new THREE.BoxGeometry(groundSize.x - 4, ISLAND_H * 0.55, groundSize.z - 4),
+    new THREE.BoxGeometry(groundSize.x - 8, ISLAND_H * 0.55, groundSize.z - 8),
     new THREE.MeshLambertMaterial({ color: rock }),
   );
   bottomRock.position.y = -ISLAND_H * 0.55 / 2;
@@ -380,11 +383,29 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
   // the floor sits at local y=-2 inside `ground`; island top just below it
   island.position.y = -2 - ISLAND_H / 2 + 0.4;
   ground.add(island);
+  // island bottom world Y (bottomRock underside) — used by fitBox
+  const islandBottomY = island.position.y - ISLAND_H * 0.55;
   bbox.expandByScalar(roadWidthM / 2 + 28);
   // tall props (city towers) project above the flat circuit bbox —
   // lift the top so the camera fit keeps them in frame
   const maxPropH = (def.props ?? []).reduce((m, p) => Math.max(m, p.h ?? 0), 0);
   if (maxPropH > 0) bbox.max.y += maxPropH;
+  // camera-fit box: the WHOLE island, not just the circuit (Step 5,
+  // MCPG-47). The floating slab is the diorama; if it bleeds off-frame on
+  // the far side the near side gets cut and a sky band slices the scene.
+  // Extents: floor + lip overhang in X/Z, island bottom to prop top in Y.
+  const fitBox = new THREE.Box3(
+    new THREE.Vector3(
+      trackCenter.x - (groundSize.x + ISLAND_LIP) / 2,
+      islandBottomY,
+      trackCenter.z - (groundSize.z + ISLAND_LIP) / 2,
+    ),
+    new THREE.Vector3(
+      trackCenter.x + (groundSize.x + ISLAND_LIP) / 2,
+      bbox.max.y,
+      trackCenter.z + (groundSize.z + ISLAND_LIP) / 2,
+    ),
+  );
 
   function dispose() {
     group.traverse((o) => {
@@ -436,6 +457,7 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     tangentAt,
     pitBoxes,
     bbox,
+    fitBox,
     theme,
     def,
     // exposed for scene.js (Step 2, MCPG-44): island slab + shadow setup

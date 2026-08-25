@@ -63,6 +63,34 @@ export function makeRoadTexture(theme) {
 }
 
 /**
+ * Pixel window grid for night-city facades (Step 5, MCPG-47).
+ * 16x16 canvas, 4x4 grid of 2x2-px windows: a seeded mix of warm-lit,
+ * dim and unlit panes so the strip reads as a building, not a glowing
+ * slab. The wall color fills the gaps so the tile sits on the body box.
+ */
+export function makeWindowsTexture({ wall, seed = 1 }) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 16;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = wall;
+  ctx.fillRect(0, 0, 16, 16);
+  const off = new THREE.Color(wall).offsetHSL(0, 0, -0.32); // unlit pane inset
+  const litShades = ['#ffd98a', '#ffcb5e', '#ffe9b8'];
+  const rng = createRng(seed);
+  for (let cy = 0; cy < 4; cy++) {
+    for (let cx = 0; cx < 4; cx++) {
+      const r = rng.next();
+      ctx.fillStyle =
+        r < 0.56 ? litShades[Math.floor(rng.next() * litShades.length)]
+        : r < 0.72 ? '#a97f3c'
+        : `#${off.getHexString()}`;
+      ctx.fillRect(cx * 4 + 1, cy * 4 + 1, 2, 2);
+    }
+  }
+  return pixelTexture(canvas);
+}
+
+/**
  * Checker strip for start/finish. `cols` squares across (v), `rows` squares
  * along (u); repeat along u, clamp across.
  */

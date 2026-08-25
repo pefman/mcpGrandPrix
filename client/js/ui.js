@@ -72,6 +72,7 @@ export function createUi() {
   const labels = $('labels');
 
   const labelEls = new Map(); // carId -> el
+  const labelQueue = []; // labels placed this frame; layoutLabels() resolves overlaps
   const lbEls = new Map(); // carId -> row
 
   function ensureLabel(carId, name, color) {
@@ -256,6 +257,38 @@ export function createUi() {
       el.style.display = '';
       el.style.left = `${screenPos.x}px`;
       el.style.top = `${screenPos.y}px`;
+      labelQueue.push({ el, x: screenPos.x, y: screenPos.y });
+    },
+
+    /**
+     * Resolve label collisions (Step 5, MCPG-47): cars on the grid or in a
+     * tight battle project to nearly the same screen point, so their
+     * labels would sit on top of each other. Stack them upward until each
+     * is clear. Call once per frame, after every placeLabel.
+     */
+    layoutLabels() {
+      const placed = [];
+      for (const it of labelQueue) {
+        const w = it.el.offsetWidth || 64;
+        const h = it.el.offsetHeight || 14;
+        let { x, y } = it;
+        // repeat until stable: stacking above one label can land on an
+        // earlier one that was already clear of the original position
+        for (let guard = 0; guard < 16; guard++) {
+          let moved = false;
+          for (const p of placed) {
+            if (Math.abs(x - p.x) < (w + p.w) / 2 + 4 &&
+                Math.abs(y - p.y) < (h + p.h) / 2 + 4) {
+              y = Math.min(y, p.y) - (p.h + 4); // stack above the one it hits
+              moved = true;
+            }
+          }
+          if (!moved) break;
+        }
+        it.el.style.top = `${y}px`;
+        placed.push({ x, y, w, h });
+      }
+      labelQueue.length = 0;
     },
 
     showStartOverlay(status, joinedLine) {
@@ -390,6 +423,7 @@ export function createUi() {
       banner.classList.add('hidden');
       labels.textContent = '';
       labelEls.clear();
+      labelQueue.length = 0;
       lbRows.textContent = '';
       lbEls.clear();
       this.setPending([]);

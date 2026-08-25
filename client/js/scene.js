@@ -5,12 +5,17 @@
  * once to the track's bounding box. No pan, no zoom, no follow-cam.
  * The renderer draws into a quarter-resolution buffer that CSS upscales
  * with `image-rendering: pixelated`: chunky pixels, no antialiasing.
- * Background, fog and lights come from the track theme.
+ * Background and lights come from the track theme.
  *
  * Step 2 (MCPG-44): one soft directional shadow (chunky, on-brand) and a
  * thick island slab under the ground plane — the floating-tabletop read.
  * Shadows are a single toggle (SHADOWS_ENABLED); if they moiré at the
  * 1/4-res buffer, flipping it off is the Step-5 lever.
+ *
+ * Step 5 (MCPG-47): the camera fits the WHOLE island (track.fitBox), so
+ * the floating slab reads as a diorama on a table instead of bleeding
+ * off-frame; fog is gone (the hard slab edge IS the diorama border);
+ * per-frame temporaries keep the render loop allocation-free.
  */
 import * as THREE from 'three';
 import { buildTrack } from './track.js';
@@ -24,9 +29,14 @@ export const CAR_COLORS = [
 const PIXEL_SCALE = 4; // buffer = 1/PIXEL_SCALE of the CSS size
 const ELEVATION = THREE.MathUtils.degToRad(35);
 const FIT_MARGIN = 1.05;
-const SHADOWS_ENABLED = true; // kill-switch; tune/decide in Step 5 (MCPG-47)
+const SHADOWS_ENABLED = true; // kill-switch; keep on (verified in Step 5, MCPG-47)
 const SHADOW_MAP_SIZE = 2048;
 const PIT_TWEEN_MS = 900; // pit lane drive-in/out, client-side only (MCPG-45)
+
+// shared per-frame temporaries (Step 5, MCPG-47): label projection reuses
+// one Vector3 instead of allocating per car per frame
+const _labelVec = new THREE.Vector3();
+const _labelOut = { x: 0, y: 0 }; // reused by labelScreenPos (read immediately)
 
 /**
  * Voxel F1 car (Step 3, MCPG-45): a box stack with a strong F1 silhouette,
@@ -106,7 +116,7 @@ export function createSpectatorScene(canvas, trackInfo, def) {
 
   const theme = def.theme;
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(theme.sky); // fog set below, once the camera distance is known
+  scene.background = new THREE.Color(theme.sky);
 
   // themed lights. The shadow frustum is set once the track size is known
   // (it must cover the circuit but not the whole ground plane — a 2048 map
@@ -144,14 +154,16 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     shadow.camera.top = spread;
     shadow.camera.bottom = -spread;
     shadow.bias = -0.0015; // keep the chunky slabs from shadowing themselves
+    shadow.normalBias = 0.04; // offset along the normal: kills acne on the
+                              // chunky axis-aligned boxes (Step 5, MCPG-47)
   }
 
   // fixed camera: from the south (+z), elevated, aimed at the track center
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 10000);
   const distance = (size.x + size.z) * 0.75 + 400;
-  // Fog tuned to the camera distance: the circuit itself stays clear, the
-  // far edge of the ground plane melts into the sky colour
-  scene.fog = new THREE.Fog(new THREE.Color(theme.sky), distance * 1.15, distance * 2.5);
+  // No fog (Step 5, MCPG-47): the ground is a finite island slab, and its
+  // hard edge against the sky is the intended diorama border — foging it
+  // would just blur the tabletop's far rim.
   camera.position.set(
     center.x,
     center.y + distance * Math.sin(ELEVATION),
@@ -169,10 +181,11 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   const DIM = new THREE.Color(0x3a3f48); // retired cars fade to this
 
   // ---- race FX (Step 4, MCPG-46): one shared effect system (client/js/fx.js)
-  const fx = createFx(scene);
+  const fx = createFx(scene, theme);
   const fxPos = new THREE.Vector3(); // long-lived: fx.burst copies it
   let prevOrder = null;    // last seen standings order (overtake detection)
   let prevPhase = null;    // last seen phase (start / finish detection)
+  let lastEventSnapshot = null; // dedupe: setCar is called per car with the SAME snapshot object each frame
   const lastOvertakeAt = new Map(); // pairKey -> ms (one burst per pass)
 
   /**
@@ -182,6 +195,10 @@ export function createSpectatorScene(canvas, trackInfo, def) {
    * render buffer (the car is placed right before this).
    */
   function detectEvents(snapshot) {
+    // one detection pass per snapshot: every setCar in the frame hands over
+    // the same object (Step 5, MCPG-47 — 4-8 identical passes was pure waste)
+    if (snapshot === lastEventSnapshot) return;
+    lastEventSnapshot = snapshot;
     const now = performance.now();
 
     // race start: first strategy window of the race (cars still on the grid)
@@ -336,6 +353,8 @@ export function createSpectatorScene(canvas, trackInfo, def) {
       heading = track.tangentAt(s);
     }
     group.position.set(pos.x, 0, pos.z);
+    // lookAt with scalars uses three's cached target: no per-frame alloc
+    // (Step 5, MCPG-47)
     if (heading) {
       group.lookAt(pos.x + heading.x, 0, pos.z + heading.z); // +Z faces the nose
     }
@@ -359,7 +378,9 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     renderer.setSize(bw, bh, false); // buffer size; CSS stretches the canvas
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
-    fitCamera(camera, track.bbox, w / h);
+    // fit the WHOLE island, not just the circuit (Step 5, MCPG-47): the
+    // floating slab stays in frame on every side, no sky band slicing it
+    fitCamera(camera, track.fitBox, w / h);
   }
   resize();
   window.addEventListener('resize', resize);
@@ -386,13 +407,14 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     labelScreenPos(carId) {
       const car = cars.get(carId);
       if (!car) return null;
-      const v = car.group.position.clone().add(new THREE.Vector3(0, 6, 0));
-      v.project(camera);
-      if (v.z > 1) return null; // behind the camera
-      return {
-        x: (v.x * 0.5 + 0.5) * renderer.domElement.clientWidth,
-        y: (-v.y * 0.5 + 0.5) * renderer.domElement.clientHeight,
-      };
+      // shared temp (Step 5, MCPG-47): the caller reads x/y immediately
+      _labelVec.copy(car.group.position);
+      _labelVec.y += 6;
+      _labelVec.project(camera);
+      if (_labelVec.z > 1) return null; // behind the camera
+      _labelOut.x = (_labelVec.x * 0.5 + 0.5) * renderer.domElement.clientWidth;
+      _labelOut.y = (-_labelVec.y * 0.5 + 0.5) * renderer.domElement.clientHeight;
+      return _labelOut;
     },
     tick,
     render() {
