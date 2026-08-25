@@ -32,7 +32,7 @@
 #     4. promote: `up -d server client` on the existing project/ports (3080/
 #        8080, restart policy unless-stopped) + health check within
 #        HEALTH_TIMEOUT_S.
-#     5. tear down the canary + remove its log dir.
+#     5. tear down the canary (down -v, so its log volume is removed too).
 #     canary fail  -> canary down + restore previous image ($PREV_TAG ->
 #                     `latest`), error, exit 1. Prod untouched;
 #                     $VPS_STATE_FILE not updated, so the next run retries.
@@ -178,13 +178,10 @@ canary_up() {
 # clear leftovers from a crashed prior run, and after success/failure so the
 # VPS never accumulates canary junk.
 canary_down() {
-  vps "$(canary_compose) down --remove-orphans --timeout 10" || true
-}
-
-# Remove the canary's separate log dir (it is not prod's ./log — see
-# docker-compose.canary.yml for why the mount must be separate).
-canary_cleanup_logs() {
-  vps "rm -rf '$VPS_APP_DIR/log-canary'" || true
+  # -v also removes the canary's named log volume (see docker-compose.canary.yml:
+  # the canary log is a named volume, not a bind mount, because daemon-created
+  # bind mounts are root-owned and the non-root server can't write them).
+  vps "$(canary_compose) down -v --remove-orphans --timeout 10" || true
 }
 
 # Can the canary serve MCP at all? POST a JSON-RPC initialize to the canary
@@ -236,7 +233,6 @@ vps_diagnostics() {
 canary_fail_exit() {
   local msg="$1"
   canary_down
-  canary_cleanup_logs
   if [[ $have_prev == 1 ]]; then
     vps "docker tag $PREV_TAG $IMAGE_NAME" || true
   fi
@@ -301,7 +297,7 @@ if [[ $DRY_RUN == 1 ]]; then
   log "  vps: CANARY_HTTP_PORT=$CANARY_HTTP_PORT CANARY_CLIENT_PORT=$CANARY_CLIENT_PORT $(canary_compose) up -d $COMPOSE_SERVICES"
   log "  vps: canary health for <= ${HEALTH_TIMEOUT_S}s (healthz on :$CANARY_HTTP_PORT + $CANARY_PROJECT-server-1 running + MCP initialize on :$CANARY_HTTP_PORT + client on :$CANARY_CLIENT_PORT) — prod untouched"
   log "  vps: cd $VPS_APP_DIR && docker compose $(compose_env_flag) up -d $COMPOSE_SERVICES (promote prod to the new image)"
-  log "  vps: prod health check for <= ${HEALTH_TIMEOUT_S}s, then $(canary_compose) down + rm -rf $VPS_APP_DIR/log-canary"
+  log "  vps: prod health check for <= ${HEALTH_TIMEOUT_S}s, then $(canary_compose) down -v (removes canary containers, network and log volume)"
   log "  vps: write '$new_sha' to $VPS_STATE_FILE"
   log "  on canary/promote failure: $(canary_compose) down, restore the previous image ($PREV_TAG -> $IMAGE_NAME), prod untouched, exit 1"
   exit 0
@@ -366,7 +362,6 @@ fi
 
 # 4) Success: clean up the canary completely, then mark the new SHA deployed.
 canary_down
-canary_cleanup_logs
 
 # Only a healthy new stack earns the new SHA in the state file.
 vps "printf '%s\n' '$new_sha' > '$VPS_STATE_FILE'"

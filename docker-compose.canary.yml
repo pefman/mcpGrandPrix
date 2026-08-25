@@ -15,6 +15,12 @@
 # Separate /logs mount is REQUIRED, not cosmetic: the DecisionLogger
 # truncates its file on open (src/logging/decisionLogger.js), so a canary
 # sharing the prod ./log bind mount would wipe the prod decision log on boot.
+# It is a NAMED volume, not a ./log-canary bind mount: daemon-created bind
+# mounts are root:root, but the server runs as the non-root `node` user (uid
+# 1000) and crashes with EACCES on /logs/race.jsonl (MCPG-48). A named
+# volume is initialized from the image's /logs, which the Dockerfile already
+# chowns to node — writable from first start. deploy.sh removes the volume
+# on teardown (`down -v`), so no log survives the canary.
 #
 # restart: "no" — a canary must never auto-restart or outlive the deploy.
 # No `build`: deploy.sh builds the image from docker-compose.yml first; the
@@ -35,7 +41,7 @@ services:
     ports:
       - "${CANARY_HTTP_PORT:-3180}:3080"
     volumes:
-      - ${CANARY_LOG_DIR:-./log-canary}:/logs
+      - canary-logs:/logs
     restart: "no"
   client:
     image: mcp-grand-prix:latest
@@ -43,3 +49,5 @@ services:
     ports:
       - "${CANARY_CLIENT_PORT:-8180}:8080"
     restart: "no"
+volumes:
+  canary-logs:
