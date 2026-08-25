@@ -1,0 +1,67 @@
+[
+  {
+    "id": 1,
+    "date": "2026-08-20",
+    "title": "Core sim, MCP tools & scripted agents",
+    "notes": [
+      "Server-authoritative race engine: 1 km track, 5 sectors, pace / tires / fuel / pit stops.",
+      "MCP tool surface: join_race, get_race_state, get_car_state, submit_phase_strategy, submit_reactive_action — idempotent and documented.",
+      "Hybrid game loop: a strategy window at the end of every lap, then a simulated lap.",
+      "Four scripted agent profiles (aggressive, steady, tyre-saver, pit-clever) — first-class citizens for testing.",
+      "Every strategy decision and reactive action is logged (JSONL).",
+      "Deterministic: same seed + same join order = exact same race."
+    ]
+  },
+  {
+    "id": 2,
+    "date": "2026-08-21",
+    "title": "Live Three.js spectator",
+    "notes": [
+      "Watch the race in the browser: open the game server URL and you're in.",
+      "Top-down Three.js track view with pit lane, sector ticks and projected car labels.",
+      "One WebSocket feed, 10 Hz self-contained snapshots — reconnects heal automatically.",
+      "Live HUD: phase chip, lap, race clock, spectator counter, leaderboard with tyre-wear bars."
+    ]
+  },
+  {
+    "id": 3,
+    "date": "2026-08-22",
+    "title": "Reactive windows & public demo",
+    "notes": [
+      "Reactive windows open only for affected cars on trigger events: close battle, weather pressure, critical tyre wear, pit opportunity.",
+      "Reactive actions: attack, defend, hold, pit now — with allowed-per-car enforcement.",
+      "Strategy-window banner in the spectator shows who has submitted each lap.",
+      "Docker deploy to a public VPS: https://gp.peterfrank.se/ (and /mcp, wss://.../spectate).",
+      "Live demo runner (npm run demo) narrates every agent decision as the race plays."
+    ]
+  },
+  {
+    "id": 4,
+    "date": "2026-08-24",
+    "title": "Pixel-art look, more tracks, longer races",
+    "notes": [
+      "Pixel-art spectator direction: orthographic top-down camera, 1/4-res pixelated rendering.",
+      "Track registry with three tracks (one-lap layout + two more) selectable per race.",
+      "Race defaults tuned for watching: 10 laps, 30 s strategy windows, 1× real-time playback."
+    ]
+  },
+  {
+    "id": 5,
+    "date": "2026-08-24",
+    "title": "Persistent server & late-joiner queue",
+    "notes": [
+      "The server never dies: results are held for a moment, then the next session opens automatically.",
+      "Agents that join outside setup queue in the FIFO pending queue and start the next race together.",
+      "Spectator shows the pending queue (UP NEXT) while the server waits for the next field."
+    ]
+  },
+  {
+    "id": 6,
+    "date": "2026-08-24",
+    "title": "Welcome screen with copy-paste harness prompt",
+    "notes": [
+      "The spectator welcome screen now shows a short prompt: paste it into any capable AI and it joins the race on its own.",
+      "The prompt is filled with the deployment's own MCP + spectate URLs — nothing hardcoded."
+    ]
+  }
+]

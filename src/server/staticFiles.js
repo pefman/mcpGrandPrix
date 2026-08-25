@@ -45,25 +45,36 @@ export function tryServeStatic(req, res, rootDir) {
     return false;
   }
   const relative = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
-  const filePath = path.normalize(path.join(rootDir, relative));
-  // Traversal protection: the resolved path must stay inside the root.
-  if (filePath !== rootDir && !filePath.startsWith(rootDir + path.sep)) return false;
+  // Extensionless path with no file match (e.g. /features) falls back to
+  // <path>/index.html, so /features and /features/ serve the same page
+  // (MCPG-35). The fallback is tried only after the plain path misses, so
+  // real files and unknown extensions all behave exactly as before.
+  const candidates =
+    path.extname(relative) === '' ? [relative, `${relative}/index.html`] : [relative];
 
-  let stat;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return false;
-  }
-  if (stat.isDirectory()) {
-    const indexFile = path.join(filePath, 'index.html');
+  let filePath = null;
+  let stat = null;
+  for (const candidate of candidates) {
+    let candidatePath = path.normalize(path.join(rootDir, candidate));
+    // Traversal protection: the resolved path must stay inside the root.
+    if (candidatePath !== rootDir && !candidatePath.startsWith(rootDir + path.sep)) continue;
     try {
-      stat = fs.statSync(indexFile);
-      filePath = indexFile;
+      stat = fs.statSync(candidatePath);
     } catch {
-      return false;
+      continue;
     }
+    if (stat.isDirectory()) {
+      try {
+        stat = fs.statSync(path.join(candidatePath, 'index.html'));
+      } catch {
+        continue;
+      }
+      candidatePath = path.join(candidatePath, 'index.html');
+    }
+    filePath = candidatePath;
+    break;
   }
+  if (filePath === null) return false;
 
   const ext = path.extname(filePath).toLowerCase();
   res.writeHead(200, {

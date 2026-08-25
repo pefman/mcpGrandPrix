@@ -317,6 +317,19 @@ DOM overlays: phase chip, lap, race clock, spectator counter, strategy-window
 banner (with per-driver submitted checkmarks), live leaderboard (with tire-wear
 bars), start and results screens.
 
+**What's new / features page (MCPG-35).** `GET /features` serves a
+changelog page (`client/features/index.html`) — same static serving, no
+server-code changes, works identically on the :8080 client service. The
+content lives in one hand-edited file, `client/features.json`:
+`[{ id, date, title, notes[] }, …]` with `id` strictly increasing — add one
+entry in the same PR that ships the slice. A small "NEW" badge appears in
+the spectator HUD while the file has entries newer than what the browser has
+seen (`localStorage['mgp-features-seen']`); opening `/features` stores the
+max id and hides it. The badge opens the page in a new tab so the live race
+stays visible. On the VPS, `deploy.sh` stamps `client/build-info.json`
+(`{"sha": …}`) before the build; the page footer shows `build <sha7>` when
+present and omits the line otherwise.
+
 ## Layout
 
 ```
@@ -339,6 +352,8 @@ src/
   server/staticServe.js  standalone static server for split deploys (Docker
                          `client` service, Vercel)
 client/                  Three.js spectator client (index.html, js/, vendor/)
+  features.json          changelog content for /features (MCPG-35)
+  features/index.html    the /features page (static, same serving rules)
 agents/
   agentBase.js           MCP client loop: join, poll, submit once per lap,
                          react to reactive windows
@@ -395,6 +410,9 @@ these lines live.
 - `test/static.test.js` — the static file server: the client page and its
   assets, `GET /state` JSON, `GET /healthz` (no race → race status with id +
   phase after an agent joins), path-traversal rejection, 404 for unknown paths.
+- `test/features.test.js` — the /features changelog page: features.json
+  shape (parse + strictly increasing ids), and static serving of
+  `/features`, `/features/`, `/features.json`, the renderer and the badge.
 - `test/staticServe.test.js` — the standalone static server for split
   deployments (same files, same 404 shape).
 - `test/demo.test.js` — the demo narration: every narrated decision type

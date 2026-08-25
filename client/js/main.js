@@ -10,11 +10,13 @@ import { createUi } from './ui.js';
 import { loadTrackDef } from './tracks.js';
 import { buildHarnessPrompt, HARNESS_PROMPT_REVISION } from './harnessPrompt.js';
 import { resolveServerOrigin } from './resolveUrl.js';
+import { initFeaturesBadge } from './featuresBadge.js';
 
 const RENDER_DELAY_MS = 150; // interpolation delay (see spectatorClient.js)
 
 const canvas = document.getElementById('scene');
 const ui = createUi();
+initFeaturesBadge(); // "NEW" badge -> /features (MCPG-35); self-contained
 const conn = new SpectatorConnection();
 
 let scene = null;
