@@ -27,6 +27,10 @@ COPY package.json ./
 COPY src ./src
 COPY agents ./agents
 COPY client ./client
+# client/build-info.json (deploy SHA for the /features footer, MCPG-35) is
+# stamped on the host by scripts/deploy.sh AFTER the reset and is not in git;
+# an empty placeholder keeps the build reproducible when the file is absent.
+RUN [ -f client/build-info.json ] || echo '{}' > client/build-info.json
 COPY scripts ./scripts
 COPY tracks ./tracks
 # decision-log volume (mounted at /logs by docker compose); pre-owned by the

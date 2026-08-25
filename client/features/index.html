@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MCP Grand Prix — What's New</title>
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    /* Features page (MCPG-35): reuses the spectator design tokens; the page
+       itself is scrollable, so its body overrides the spectator's fixed one. */
+    body { overflow: auto; }
+    #features {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+    #features .feat-title {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      background: linear-gradient(90deg, var(--accent), var(--purple));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin-bottom: 8px;
+    }
+    #features .feat-sub { color: var(--muted); font-size: 13px; margin-bottom: 36px; }
+    .feat-entry {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 14px;
+    }
+    .feat-entry-head {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .feat-date { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .feat-entry-title { font-weight: 700; font-size: 15px; }
+    .feat-entry ul { margin: 6px 0 0; padding-left: 18px; }
+    .feat-entry li { margin: 4px 0; line-height: 1.45; }
+    #features .feat-empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 48px 0;
+    }
+    #features .feat-footer {
+      margin-top: 36px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    #features .feat-footer a { color: var(--blue); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main id="features">
+    <div class="feat-title">WHAT'S NEW</div>
+    <div class="feat-sub">
+      Recent changes in MCP Grand Prix — what shipped, slice by slice.
+    </div>
+    <div id="feat-list"></div>
+    <div id="feat-footer" class="feat-footer"></div>
+  </main>
+  <script type="module" src="/js/features.js"></script>
+</body>
+</html>

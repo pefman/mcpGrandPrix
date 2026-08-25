@@ -199,6 +199,10 @@ old_image="$(vps "docker image inspect -f '{{.Id}}' $IMAGE_NAME 2>/dev/null || t
 
 vps "git -C $VPS_APP_DIR fetch origin && git -C $VPS_APP_DIR reset --hard origin/main"
 
+# Stamp the deployed SHA into client/ for the features page footer (MCPG-35);
+# the page omits the line when the file is absent (e.g. local dev).
+vps "printf '{\"sha\": \"%s\"}\n' '$new_sha' > $VPS_APP_DIR/client/build-info.json"
+
 if compose_up "build" && wait_for_health; then
   :
 else
