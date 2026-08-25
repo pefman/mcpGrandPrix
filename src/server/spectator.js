@@ -181,8 +181,10 @@ export function createSpectatorHub(httpServer, initialSession, {
     ws.send(buildHelloMessage(s));
     if (s.votingInfo) {
       // (Re)connected into an open voting window (MCPG-28): get the window
-      // state now, like the hello on connect.
-      ws.send(JSON.stringify({ type: 'voting', ...s.votingInfo }));
+      // state now, like the hello on connect. MCPG-57: the same live view
+      // as the open-window snapshots (running counts + remainingS; no
+      // winner — the window is still open), not the raw window info.
+      ws.send(JSON.stringify({ type: 'voting', ...s.stateView.vote }));
     }
     ws.send(buildSnapshotMessage(s, clients.size));
 

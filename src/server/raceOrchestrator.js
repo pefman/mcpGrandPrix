@@ -150,7 +150,11 @@ export class RaceOrchestrator {
       raceId: this.raceId,
       raceSeq: this.raceSeq,
       options,
-      winner: this.votingInfo?.winner ?? null,
+      // MCPG-57: while the window is open no winner exists — the decision
+      // happens at close and travels in the vote_result broadcast. A
+      // provisional winner here made the client show DECIDED for the whole
+      // window and never render the Vote buttons.
+      winner: null,
       defaultId: this.votingInfo?.defaultId ?? null,
       totalVotes: Object.keys(this._votes ?? {}).length,
       windowSeconds: this.voteWindowSeconds,
@@ -234,11 +238,14 @@ export class RaceOrchestrator {
     const options = this.voteWindowOptions();
     const racedId = this.session ? this.session.sim.track.id : null;
     this._votes = {};
+    // MCPG-57: no provisional `winner` in the open-window info — the
+    // fallback pick is only applied at close (and is not the decision
+    // until it is). Everything reading the window state goes through
+    // voteView(), which reports winner: null while the window is open.
     this.votingInfo = {
       raceId: this.raceId,
       raceSeq: seq,
       options,
-      winner: this._fallbackTrackId(),
       defaultId: racedId,
       windowSeconds,
     };
