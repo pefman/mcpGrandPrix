@@ -26,18 +26,18 @@
 #        NOT involved, it is the ephemeral scripted-race runner.
 #     3. CANARY (MCPG-41): start the new image side-by-side on alternate
 #        LAN-only host ports (3180 / 8180, compose project `mcgp-canary`,
-#        docker-compose.canary.yml override) and health-check IT (healthz 2xx
-#        + canary server container running + MCP initialize on the canary
-#        port) — prod is not touched at all in this step.
+#        self-contained docker-compose.canary.yml) and health-check IT
+#        (healthz 2xx + canary server container running + MCP initialize on
+#        the canary port) — prod is not touched at all in this step.
 #     4. promote: `up -d server client` on the existing project/ports (3080/
 #        8080, restart policy unless-stopped) + health check within
 #        HEALTH_TIMEOUT_S.
 #     5. tear down the canary + remove its log dir.
-#     canary fail  -> canary down + re-tag previous image as `latest`,
-#                     error, exit 1. Prod untouched; $VPS_STATE_FILE not
-#                     updated, so the next run retries.
-#     promote fail -> canary down + existing rollback (previous image +
-#                     `up -d`), error, exit 1. $VPS_STATE_FILE not updated.
+#     canary fail  -> canary down + restore previous image ($PREV_TAG ->
+#                     `latest`), error, exit 1. Prod untouched;
+#                     $VPS_STATE_FILE not updated, so the next run retries.
+#     promote fail -> canary down + rollback (restore $PREV_TAG as `latest`
+#                     + `up -d`), error, exit 1. $VPS_STATE_FILE not updated.
 #
 # "healthy" = curl $HEALTH_URL (checked ON the VPS) returns 2xx AND the
 # compose `server` container is running. A finished race exiting 0 and the
@@ -59,6 +59,9 @@
 #   CANARY_HTTP_PORT canary server host port (default: 3180)
 #   CANARY_CLIENT_PORT canary client host port (default: 8180)
 #   CANARY_PROJECT   compose project name for the canary (default: mcgp-canary)
+#   PREV_TAG         stable tag pinning the previous image before a build;
+#                    restored as `latest` on canary/promote failure
+#                    (default: mcp-grand-prix:prev)
 #
 # Tools: bash + git + ssh + curl on the agent host; docker + compose on the VPS.
 # No secrets in this file or in the repo — only the agent-host key path.
@@ -81,6 +84,7 @@ REPO_URL="https://github.com/pefman/mcpGrandPrix.git"
 # scripted-race runner and starting it would auto-start a race.
 COMPOSE_SERVICES="server client"
 IMAGE_NAME="mcp-grand-prix:latest"
+PREV_TAG="${PREV_TAG:-mcp-grand-prix:prev}"
 
 DRY_RUN=0
 for arg in "$@"; do
@@ -137,13 +141,16 @@ compose_env_flag() {
   if vps "[ -f '$VPS_ENV_FILE' ]"; then echo "--env-file $VPS_ENV_FILE"; fi
 }
 
-# Compose invocation for the canary stack (override file + own project name,
-# so it has its own container names, network and volumes and never touches the
-# prod `app` project).
+# Compose invocation for the canary stack: the SELF-CONTAINED canary file
+# (single -f, deliberately NOT layered over the base file — Compose v2 merges
+# `ports` by {ip, target, published, protocol}, so an override would keep the
+# base file's prod ports in the canary too; see docker-compose.canary.yml
+# and MCPG-48) + own project name, so it has its own container names, network
+# and volumes and never touches the prod `app` project.
 canary_compose() {
   local env_flag
   env_flag="$(compose_env_flag)"
-  echo "docker compose -p $CANARY_PROJECT -f $VPS_APP_DIR/docker-compose.yml -f $VPS_APP_DIR/docker-compose.canary.yml $env_flag"
+  echo "docker compose -p $CANARY_PROJECT -f $VPS_APP_DIR/docker-compose.canary.yml $env_flag"
 }
 
 # Build the persistent-stack image (redeploy step 1). Compose v2 has no
@@ -230,8 +237,8 @@ canary_fail_exit() {
   local msg="$1"
   canary_down
   canary_cleanup_logs
-  if [[ -n "$old_image" ]]; then
-    vps "docker tag $old_image $IMAGE_NAME" || true
+  if [[ $have_prev == 1 ]]; then
+    vps "docker tag $PREV_TAG $IMAGE_NAME" || true
   fi
   vps_diagnostics
   err "$msg"
@@ -296,15 +303,23 @@ if [[ $DRY_RUN == 1 ]]; then
   log "  vps: cd $VPS_APP_DIR && docker compose $(compose_env_flag) up -d $COMPOSE_SERVICES (promote prod to the new image)"
   log "  vps: prod health check for <= ${HEALTH_TIMEOUT_S}s, then $(canary_compose) down + rm -rf $VPS_APP_DIR/log-canary"
   log "  vps: write '$new_sha' to $VPS_STATE_FILE"
-  log "  on canary/promote failure: $(canary_compose) down, re-tag previous image as $IMAGE_NAME, prod untouched, exit 1"
+  log "  on canary/promote failure: $(canary_compose) down, restore the previous image ($PREV_TAG -> $IMAGE_NAME), prod untouched, exit 1"
   exit 0
 fi
 
 log "redeploying: $old_display -> $new_sha"
 
-# Remember the current image so a bad deploy can be rolled back to it (and so
-# a failed canary can re-tag `latest` back to the image prod is actually running).
-old_image="$(vps "docker image inspect -f '{{.Id}}' $IMAGE_NAME 2>/dev/null || true")"
+# Pin the current image under a stable rollback tag BEFORE the build retags
+# $IMAGE_NAME. A tag, not a raw digest: the VPS build runs BuildKit with
+# attestations, so $IMAGE_NAME is a manifest list, and the next
+# `docker compose build` can remove the old manifest object from the local
+# store — re-tagging a remembered `sha256:...` digest then fails with
+# "No such image" (MCPG-48). A tag is a local reference that pins the image
+# in the store, so it always survives the build.
+have_prev=0
+if vps "docker tag $IMAGE_NAME $PREV_TAG 2>/dev/null"; then
+  have_prev=1
+fi
 
 vps "git -C $VPS_APP_DIR fetch origin && git -C $VPS_APP_DIR reset --hard origin/main"
 
@@ -332,9 +347,9 @@ log "canary healthy — promoting prod to the new image"
 if ! (compose_up && wait_for_health); then
   canary_down
   vps_diagnostics
-  if [[ -n "$old_image" ]]; then
+  if [[ $have_prev == 1 ]]; then
     log "promote failed — rolling back prod to the previous image ($old_display)"
-    if vps "docker tag $old_image $IMAGE_NAME" && compose_up && wait_for_health; then
+    if vps "docker tag $PREV_TAG $IMAGE_NAME" && compose_up && wait_for_health; then
       log "rollback ok: stack healthy again on the previous image"
     else
       vps_diagnostics
@@ -355,4 +370,9 @@ canary_cleanup_logs
 
 # Only a healthy new stack earns the new SHA in the state file.
 vps "printf '%s\n' '$new_sha' > '$VPS_STATE_FILE'"
+# Drop the rollback pin: the new SHA is deployed, so the old image is no
+# longer the rollback target (the next deploy pins whatever `latest` is then).
+if [[ $have_prev == 1 ]]; then
+  vps "docker rmi $PREV_TAG 2>/dev/null" || true
+fi
 echo "DEPLOYED $old_display -> $new_sha"

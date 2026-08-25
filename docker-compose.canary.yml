@@ -1,23 +1,45 @@
-# Canary override — used ONLY by scripts/deploy.sh (MCPG-41), never by local
+# Canary stack — used ONLY by scripts/deploy.sh (MCPG-41), never by local
 # `docker compose up` (which reads docker-compose.yml alone).
 #
-# An override file REPLACES list keys, so the ports and volumes below fully
-# swap in place of the ones in docker-compose.yml: the canary runs on its own
-# host ports (3180 / 8180 by default) with a separate log mount.
+# SELF-CONTAINED file: invoked as a single `-f`, NOT as an override of
+# docker-compose.yml. Compose v2 merges `ports` as unique resources keyed by
+# {ip, target, published, protocol} — an override cannot replace the base
+# "3080:3080" with "3180:3080"; it would keep BOTH, and the canary server
+# would fail to start with "Bind for :::3080 failed: port is already
+# allocated" (MCPG-48).
+#
+# Keep image + env IN SYNC with docker-compose.yml: the canary must run
+# exactly what prod will run — same image, same ${VAR:-default} env, same VPS
+# env file (scripts/deploy.sh passes --env-file to this file as well).
 #
 # Separate /logs mount is REQUIRED, not cosmetic: the DecisionLogger
 # truncates its file on open (src/logging/decisionLogger.js), so a canary
 # sharing the prod ./log bind mount would wipe the prod decision log on boot.
 #
 # restart: "no" — a canary must never auto-restart or outlive the deploy.
+# No `build`: deploy.sh builds the image from docker-compose.yml first; the
+# canary runs that freshly built mcp-grand-prix:latest.
 services:
   server:
+    image: mcp-grand-prix:latest
+    environment:
+      PORT: "3080"
+      LAPS: ${LAPS:-5}
+      WINDOW_SECONDS: ${WINDOW_SECONDS:-2}
+      REACTIVE_WINDOW_SECONDS: ${REACTIVE_WINDOW_SECONDS:-2}
+      TICK_DELAY_MS: ${TICK_DELAY_MS:-5}
+      SEED: ${SEED:-42}
+      LOG_FILE: /logs/race.jsonl
+      MIN_AGENTS: ${MIN_AGENTS:-4}
+      MCGP_TRACK: ${MCGP_TRACK:-coastal-palm}
     ports:
       - "${CANARY_HTTP_PORT:-3180}:3080"
     volumes:
       - ${CANARY_LOG_DIR:-./log-canary}:/logs
     restart: "no"
   client:
+    image: mcp-grand-prix:latest
+    command: ["node", "src/server/staticServe.js", "/app/client", "8080"]
     ports:
       - "${CANARY_CLIENT_PORT:-8180}:8080"
     restart: "no"
