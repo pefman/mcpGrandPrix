@@ -58,10 +58,48 @@ export class RaceSession {
       onEvent: (event) => this.logger.log(event),
     });
     this._running = false;
+    this._orchestrator = null; // set by RaceOrchestrator._openSession (MCPG-28)
   }
 
   addAgent(name, agentId) {
     return this.sim.addAgent(name, agentId);
+  }
+
+  /**
+   * Post-race track voting (MCPG-28): when the session sits behind the
+   * orchestrator, the hub asks for the open vote window's info (for
+   * (re)connecting spectators) and routes inbound `{ type: 'vote' }` messages
+   * to `castVote(sessionId, trackId)`. Bare sessions report no window.
+   */
+  get votingInfo() {
+    return this._orchestrator?.votingInfo ?? null;
+  }
+
+  /**
+   * The phase as the spectator hub sees it: 'voting' when the orchestrator
+   * is in its post-race vote window (MCPG-28), otherwise the simulation's
+   * own phase. The hub's broadcast loop uses this to decide what to send.
+   */
+  get phaseView() {
+    return this.votingInfo ? 'voting' : this.sim.phase;
+  }
+
+  /**
+   * The full state view for the spectator hub: the simulation's state,
+   * with the orchestrator's phase + vote block overlaid during the voting
+   * window (MCPG-28). The hub's broadcast loop sends this to clients.
+   */
+  get stateView() {
+    if (this.votingInfo) {
+      const remainingS = Math.max(0, (this._orchestrator?._voteDeadline ?? 0) - Date.now()) / 1000;
+      return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [], phase: 'voting', vote: this._orchestrator?.voteView(remainingS) };
+    }
+    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [] };
+  }
+
+  castVote(sessionId, trackId) {
+    if (this._orchestrator) return this._orchestrator.castVote(sessionId, trackId);
+    return { accepted: false, error: 'no vote window open' };
   }
 
   /** Start the race (requires >= minAgents). Opens the first strategy window. */
@@ -86,7 +124,7 @@ export class RaceSession {
   }
 
   state() {
-    return this.sim.state();
+    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [] };
   }
 
   carView(carId) {

@@ -20,6 +20,8 @@
 import { CONFIG } from '../config.js';
 import { DecisionLogger } from '../logging/decisionLogger.js';
 import { RaceSession } from './raceSession.js';
+import { Track } from '../track.js';
+import { getTrackDef, loadTrackDefs, persistNextTrack, readNextTrack } from '../tracks.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -33,6 +35,10 @@ export class RaceOrchestrator {
    * @param {object} [opts.logger]           shared DecisionLogger; created when omitted
    * @param {Function} [opts.onSession]      (session, seq) => void — a new session opened (hub reset)
    * @param {Function} [opts.onRaceComplete] (session, seq) => void — a race finished (hold begins)
+   * @param {number}   [opts.voteWindowSeconds] post-race track-voting window (MCPG-28); 0 disables voting
+   * @param {string}   [opts.nextTrackFile]  where the vote winner is persisted (restart-safe)
+   * @param {Function} [opts.onVoteStart]    (info) => void — voting window opened (hub broadcasts)
+   * @param {Function} [opts.onVoteEnd]      (result) => void — voting window closed (hub finalizes)
    */
   constructor(opts = {}) {
     const {
@@ -48,12 +54,28 @@ export class RaceOrchestrator {
       maxAgents = CONFIG.race.maxAgents,
       resultsHoldSeconds = CONFIG.timing.resultsHoldSeconds,
       pendingGraceSeconds = CONFIG.timing.pendingGraceSeconds,
+      voteWindowSeconds = CONFIG.timing.voteWindowSeconds,
+      nextTrackFile = null, // defaults to the log volume (see tracks.js)
       delayFn = sleep,
       logger = null,
       onSession = null,
       onRaceComplete = null,
+      onVoteStart = null,
+      onVoteEnd = null,
     } = opts;
     this.opts = { totalLaps, strategyWindowSeconds, reactiveWindowSeconds, tickSeconds, tickWallDelayMs, seed, track, logToStdout };
+    this.onVoteStart = onVoteStart;
+    this.onVoteEnd = onVoteEnd;
+    // MCPG-28: post-race spectator voting. The env MCGP_TRACK seeds the
+    // first session; from session 2 on the vote (or the fallback rotation
+    // when nobody voted) decides the track, persisted in nextTrackFile so a
+    // restart between races cannot lose the decision.
+    this.voteWindowSeconds = voteWindowSeconds;
+    this.nextTrackFile = nextTrackFile ?? null;
+    this.nextTrackId = this._initialTrackId();
+    this._votes = null; // current window's { sessionId -> trackId }
+    this.votingInfo = null; // what the snapshot broadcasts while voting
+    this._voteDeadline = 0; // wall time the current window closes/closed
     this.ownsLogger = !logger;
     this.logger = logger ?? new DecisionLogger({ file: logFile, stdout: logToStdout });
     this.maxAgents = maxAgents;
@@ -93,7 +115,164 @@ export class RaceOrchestrator {
     if (!this.session) {
       return { phase: 'setup', cars: [], standings: [], pending: this.pendingView() };
     }
+    if (this.votingInfo) {
+      // Voting window (MCPG-28): the session sits in 'finished' behind the
+      // result hold, but spectators are told the phase is 'voting'.
+      const remainingS = Math.max(0, (this._voteDeadline - Date.now()) / 1000);
+      return { ...this.session.state(), pending: this.pendingView(), phase: 'voting', vote: this.voteView(remainingS) };
+    }
     return { ...this.session.state(), pending: this.pendingView() };
+  }
+
+  /** The vote block broadcast inside snapshots while the window is open. */
+  voteView(remainingS) {
+    const counts = this._voteCounts();
+    const options = this.voteWindowOptions().map((o) => ({ ...o, votes: counts[o.id] ?? 0 }));
+    return {
+      raceId: this.raceId,
+      raceSeq: this.raceSeq,
+      options,
+      winner: this.votingInfo?.winner ?? null,
+      defaultId: this.votingInfo?.defaultId ?? null,
+      totalVotes: Object.keys(this._votes ?? {}).length,
+      windowSeconds: this.voteWindowSeconds,
+      remainingS: remainingS !== undefined ? Math.round(remainingS * 100) / 100 : this.voteWindowSeconds,
+    };
+  }
+
+  _voteCounts() {
+    const counts = {};
+    for (const trackId of Object.values(this._votes ?? {})) counts[trackId] = (counts[trackId] ?? 0) + 1;
+    return counts;
+  }
+
+  /** Tracks offered in the window: every registry id except the one just raced. */
+  voteWindowOptions() {
+    const racedId = this.session ? this.session.sim.track.id : null;
+    return loadTrackDefs()
+      .filter((d) => d.id !== racedId)
+      .map((d) => ({ id: d.id, name: d.name, lengthM: d.lengthM, theme: d.theme }));
+  }
+
+  /**
+   * Cast (or change) one spectator's vote. Idempotent per WS session id:
+   * a repeated vote replaces the previous one, it never accumulates. The
+   * server is authoritative — only the tally at window close matters.
+   */
+  castVote(sessionId, trackId) {
+    if (!this._votes || !sessionId || typeof trackId !== 'string') {
+      return { accepted: false, error: 'no vote window open' };
+    }
+    if (!this.voteWindowOptions().some((o) => o.id === trackId)) {
+      return { accepted: false, error: `unknown track: ${trackId}` };
+    }
+    this._votes[sessionId] = trackId;
+    const totalVotes = Object.keys(this._votes).length;
+    this.logger.log({ type: 'track_vote', raceId: this.raceId, raceSeq: this.raceSeq, sessionId, trackId, totalVotes });
+    return { accepted: true, trackId, totalVotes };
+  }
+
+  /** Track id for session 1: the env MCGP_TRACK (seed for the first race). */
+  _initialTrackId() {
+    const env = (process.env.MCGP_TRACK || 'coastal-palm').trim();
+    return getTrackDef(env) ? env : 'coastal-palm';
+  }
+
+  /** Fallback pick when no vote came in: one step forward in the registry. */
+  _fallbackTrackId() {
+    const defs = loadTrackDefs();
+    const racedId = this.session ? this.session.sim.track.id : defs[0].id;
+    const i = Math.max(0, defs.findIndex((d) => d.id === racedId));
+    return defs[(i + 1) % defs.length].id;
+  }
+
+  /**
+   * Highest vote count wins; ties go to the option listed first (registry
+   * order). Deterministic for a given vote map.
+   */
+  _tallyWinner(votes) {
+    const counts = {};
+    for (const t of Object.values(votes)) counts[t] = (counts[t] ?? 0) + 1;
+    let best = null;
+    let bestCount = 0;
+    for (const o of this.voteWindowOptions()) {
+      const n = counts[o.id] ?? 0;
+      if (n > bestCount) {
+        best = o.id;
+        bestCount = n;
+      }
+    }
+    return best ?? this._fallbackTrackId();
+  }
+
+  /**
+   * Open the post-race voting window and wait for it to close. Resolves
+   * with the next track id (logged + persisted). Skipped entirely when the
+   * window is disabled (voteWindowSeconds = 0).
+   */
+  async _runVoteWindow(seq) {
+    const windowSeconds = this.voteWindowSeconds;
+    if (!windowSeconds || windowSeconds <= 0) return this._fallbackTrackId();
+    const options = this.voteWindowOptions();
+    const racedId = this.session ? this.session.sim.track.id : null;
+    this._votes = {};
+    this.votingInfo = {
+      raceId: this.raceId,
+      raceSeq: seq,
+      options,
+      winner: this._fallbackTrackId(),
+      defaultId: racedId,
+      windowSeconds,
+    };
+    this.logger.log({
+      type: 'voting_window_opened',
+      raceId: this.raceId,
+      raceSeq: seq,
+      options: options.map((o) => o.id),
+      windowSeconds,
+    });
+    if (this.onVoteStart) this.onVoteStart(this.votingInfo);
+
+    this._voteDeadline = Date.now() + windowSeconds * 1000;
+    await this._interruptibleVoteSleep(windowSeconds * 1000);
+    const interrupted = this._closed;
+
+    const votes = this._votes;
+    const total = Object.keys(votes).length;
+    const winnerId = total > 0 ? this._tallyWinner(votes) : this._fallbackTrackId();
+    const source = total > 0 ? 'vote' : 'fallback';
+    const counts = this._voteCountsFor(votes);
+    this.logger.log({
+      type: 'track_vote_result',
+      raceId: this.raceId,
+      raceSeq: seq,
+      winner: winnerId,
+      source,
+      votes: counts,
+      totalVotes: total,
+    });
+    if (!interrupted) {
+      // Persist BEFORE the next session opens: a restart during the results
+      // hold must still reproduce the decided track.
+      const payload = { trackId: winnerId, source, votes: counts, raceId: this.raceId, decidedAt: new Date().toISOString() };
+      persistNextTrack({ ...payload, file: this.nextTrackFile });
+    }
+    const finalOptions = this.voteWindowOptions().map((o) => ({ ...o, votes: counts[o.id] ?? 0 }));
+    this.votingInfo = null;
+    this.nextTrackId = winnerId;
+    if (this.onVoteEnd) this.onVoteEnd({ raceId: this.raceId, raceSeq: seq, trackId: winnerId, source, votes: counts, totalVotes: total, options: finalOptions });
+    return winnerId;
+  }
+
+  _voteCountsFor(votes) {
+    const counts = {};
+    for (const t of Object.values(votes)) counts[t] = (counts[t] ?? 0) + 1;
+    return counts;
+  }
+
+  /** Cancellable sleep for the voting window (reuses the hold's abort). */
+  _interruptibleVoteSleep(ms) {
+    return this._interruptibleSleep(ms);
   }
 
   pendingView() {
@@ -216,8 +395,11 @@ export class RaceOrchestrator {
     // Entries promised to sessions that have already started are stale.
     this.pending = this.pending.filter((p) => p.raceSeq >= this.raceSeq + 1);
     this.raceSeq += 1;
+    const track = this._nextTrackInstance();
+    this.opts.track = track;
     const s = new RaceSession({ ...this.opts, logger: this.logger, autoStartGate: () => this._holdForPending() });
     this.session = s;
+    s._orchestrator = this; // votes + voting info route back here (MCPG-28)
     this._graceUntilMs = Date.now() + this.pendingGraceSeconds * 1000;
     this._graceSettled = false;
     this._graceTimer = setTimeout(() => this._settleGraceIfDue(), this.pendingGraceSeconds * 1000);
@@ -231,6 +413,21 @@ export class RaceOrchestrator {
     if (this.onSession) this.onSession(s, this.raceSeq);
   }
 
+  /** The Track instance the next session will race (MCPG-28: vote-decided). */
+  _nextTrackInstance() {
+    const id = this.raceSeq === 0 ? this._initialTrackId() : this._trackIdForNextSession();
+    const def = getTrackDef(id);
+    return new Track({ id: def.id, name: def.name, lengthM: def.lengthM, sectorLengthM: def.sectorLengthM });
+  }
+
+  /** Session 1: env MCGP_TRACK. Later sessions: the persisted vote winner. */
+  _trackIdForNextSession() {
+    const persisted = readNextTrack(this.nextTrackFile);
+    if (persisted) return persisted.trackId;
+    const env = (process.env.MCGP_TRACK || 'coastal-palm').trim();
+    return getTrackDef(env) ? env : 'coastal-palm';
+  }
+
   async _host() {
     try {
       while (!this._closed) {
@@ -238,8 +435,10 @@ export class RaceOrchestrator {
         const seq = this.raceSeq;
         await this.session.run();
         if (this._closed) break;
+        // MCPG-28: the post-race vote decides the next session's track.
         this.logger.log({ type: 'results_hold_started', raceSeq: seq, raceId: this.raceId, holdSeconds: this.resultsHoldSeconds });
         if (this.onRaceComplete) this.onRaceComplete(this.session, seq);
+        await this._runVoteWindow(seq);
         await this._interruptibleSleep(this.resultsHoldSeconds * 1000);
       }
     } finally {

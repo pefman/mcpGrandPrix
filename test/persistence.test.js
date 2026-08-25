@@ -100,11 +100,13 @@ beforeAll(async () => {
     seed: 42,
     resultsHoldSeconds: HOLD_S,
     pendingGraceSeconds: GRACE_S,
+    voteWindowSeconds: 0, // voting is MCPG-28; this test covers persistence only
     logFile,
     logToStdout: false,
-    onSession: () => hub.reset(),
-    onRaceComplete: () => hub.finalize(),
   });
+
+  orchestrator.run(); // fire and forget; opens session 1 synchronously, resolves on shutdown
+  session1 = orchestrator.session;
 
   server = createMcpHttpServer(orchestrator);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -112,12 +114,13 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${port}/mcp`;
   wsUrl = `ws://127.0.0.1:${port}/spectate`;
 
-  hub = createSpectatorHub(server, orchestrator, {
+  hub = createSpectatorHub(server, orchestrator.session, {
+    getSession: () => orchestrator.session,
     onEvent: (e) => orchestrator.logger.log(e),
   });
 
-  orchestrator.run(); // fire and forget; opens session 1 synchronously, resolves on shutdown
-  session1 = orchestrator.session;
+  orchestrator.onSession = () => hub.reset();
+  orchestrator.onRaceComplete = () => hub.finalize();
 
   await connectSpectator();
 
