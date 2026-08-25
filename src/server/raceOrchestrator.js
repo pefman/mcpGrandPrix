@@ -22,6 +22,7 @@ import { DecisionLogger } from '../logging/decisionLogger.js';
 import { RaceSession } from './raceSession.js';
 import { Track } from '../track.js';
 import { getTrackDef, loadTrackDefs, persistNextTrack, readNextTrack } from '../tracks.js';
+import { applyRace, readSeason, saveSeason, rankSeason } from '../season.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -37,6 +38,8 @@ export class RaceOrchestrator {
    * @param {Function} [opts.onRaceComplete] (session, seq) => void — a race finished (hold begins)
    * @param {number}   [opts.voteWindowSeconds] post-race track-voting window (MCPG-28); 0 disables voting
    * @param {string}   [opts.nextTrackFile]  where the vote winner is persisted (restart-safe)
+   * @param {string}   [opts.seasonFile]     where the championship season persists (MCPG-49);
+   *                                         log-volume default, same pattern as nextTrackFile
    * @param {Function} [opts.onVoteStart]    (info) => void — voting window opened (hub broadcasts)
    * @param {Function} [opts.onVoteEnd]      (result) => void — voting window closed (hub finalizes)
    */
@@ -56,6 +59,7 @@ export class RaceOrchestrator {
       pendingGraceSeconds = CONFIG.timing.pendingGraceSeconds,
       voteWindowSeconds = CONFIG.timing.voteWindowSeconds,
       nextTrackFile = null, // defaults to the log volume (see tracks.js)
+      seasonFile = null, // defaults to the log volume (see season.js, MCPG-49)
       delayFn = sleep,
       logger = null,
       onSession = null,
@@ -78,6 +82,18 @@ export class RaceOrchestrator {
     this._voteDeadline = 0; // wall time the current window closes/closed
     this.ownsLogger = !logger;
     this.logger = logger ?? new DecisionLogger({ file: logFile, stdout: logToStdout });
+    // MCPG-49: the championship season. Loaded at startup; a corrupt file
+    // starts an empty season with a warning (logged, never crashes).
+    this.seasonFile = seasonFile ?? null;
+    const loaded = readSeason(this.seasonFile);
+    this.season = loaded.state;
+    this._seasonSettledSeq = 0; // highest raceSeq already settled (idempotency)
+    if (loaded.source === 'corrupt') {
+      this.logger.log({ type: 'season_file_corrupt', file: this.seasonFile, error: loaded.error, action: 'started_empty' });
+      console.warn(`[season] corrupt season file ${this.seasonFile} — starting an empty season (${loaded.error})`);
+    } else if (loaded.source === 'loaded') {
+      this.logger.log({ type: 'season_loaded', file: this.seasonFile, drivers: Object.keys(this.season.drivers).length });
+    }
     this.maxAgents = maxAgents;
     this.resultsHoldSeconds = resultsHoldSeconds;
     this.pendingGraceSeconds = pendingGraceSeconds;
@@ -113,7 +129,7 @@ export class RaceOrchestrator {
   /** Current race state + the pending queue (http /state, MCP get_race_state). */
   state() {
     if (!this.session) {
-      return { phase: 'setup', cars: [], standings: [], pending: this.pendingView() };
+      return { phase: 'setup', cars: [], standings: [], pending: this.pendingView(), season: this.seasonView() };
     }
     if (this.votingInfo) {
       // Voting window (MCPG-28): the session sits in 'finished' behind the
@@ -280,6 +296,44 @@ export class RaceOrchestrator {
   }
 
   /**
+   * MCPG-49: the ranked all-time season standings. Broadcast inside the
+   * spectator snapshots (the `season` field) and served by the read-only
+   * `get_season_standings` MCP tool.
+   */
+  seasonView() {
+    return rankSeason(this.season);
+  }
+
+  /**
+   * MCPG-49: award championship points for a finished race (once per
+   * session), persist the season, and log `season_points_awarded`. Called
+   * right after `session.run()` resolves — BEFORE the results hold opens —
+   * so the finished snapshot / results overlay already show the new totals.
+   * A race aborted by shutdown never settles: incomplete results are not
+   * championship results.
+   */
+  _settleSeason(seq) {
+    if (seq <= this._seasonSettledSeq) return; // already settled
+    const s = this.session;
+    if (!s || s.sim.phase !== 'finished') return;
+    const standings = s.standings();
+    if (standings.length === 0) return;
+    const { state, awards } = applyRace(this.season, standings);
+    this.season = state;
+    this._seasonSettledSeq = seq;
+    try {
+      saveSeason(this.season, this.seasonFile);
+    } catch (err) {
+      // A non-writable season path (e.g. a bare local run with no /logs)
+      // must not kill the rotation loop: the award stays in memory and the
+      // next settle retries the write. Logged, warned, never fatal.
+      this.logger.log({ type: 'season_save_failed', file: this.seasonFile, error: err?.message ?? String(err) });
+      console.warn(`[season] could not persist ${this.seasonFile}: ${err?.message ?? err} — season kept in memory`);
+    }
+    this.logger.log({ type: 'season_points_awarded', raceId: this.raceId, raceSeq: seq, awards });
+  }
+
+  /**
    * Agent-facing join (MCP join_race). Outside `setup` the name goes to the
    * pending queue instead of failing; in `setup` a queued name claims its
    * seat on join (idempotent by name, as before).
@@ -435,6 +489,9 @@ export class RaceOrchestrator {
         const seq = this.raceSeq;
         await this.session.run();
         if (this._closed) break;
+        // MCPG-49: settle the championship before the hold, so the results
+        // overlay and the final snapshot carry the fresh season totals.
+        this._settleSeason(seq);
         // MCPG-28: the post-race vote decides the next session's track.
         this.logger.log({ type: 'results_hold_started', raceSeq: seq, raceId: this.raceId, holdSeconds: this.resultsHoldSeconds });
         if (this.onRaceComplete) this.onRaceComplete(this.session, seq);

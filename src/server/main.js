@@ -16,7 +16,8 @@
  * decides, MCPG-28), RESULTS_HOLD_SECONDS (hold the results screen before
  * opening the next session; default 60), PENDING_GRACE_SECONDS (claim window
  * per queued seat; default 30), VOTE_WINDOW_SECONDS (post-race track-voting
- * window; default 30, 0 disables).
+ * window; default 30, 0 disables), MCGP_SEASON_FILE (championship season
+ * persistence file; default /logs/season.json on the log volume, MCPG-49).
  * Prints one JSON object per line on stdout: server_ready, every logged
  * race event/decision, and race_complete with final standings (per race).
  *
@@ -31,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { createMcpHttpServer } from './http.js';
 import { createSpectatorHub, SPECTATE_PATH } from './spectator.js';
 import { createTrackFromEnv, NEXT_TRACK_FILE } from '../tracks.js';
+import { SEASON_FILE } from '../season.js';
 import { RaceOrchestrator } from './raceOrchestrator.js';
 
 const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client');
@@ -56,6 +58,8 @@ const orchestrator = new RaceOrchestrator({
   // MCPG-28: the vote winner is persisted on the log volume so a container
   // restart between races cannot lose the decision.
   nextTrackFile: NEXT_TRACK_FILE,
+  // MCPG-49: the championship season persists on the same log volume.
+  seasonFile: SEASON_FILE,
   totalLaps: Number(lapsArg),
   strategyWindowSeconds: Number(windowArg),
   // Own default (10 s, in the 8-15 s spec band) — deliberately NOT derived

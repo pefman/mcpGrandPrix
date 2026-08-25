@@ -63,5 +63,16 @@
       "The spectator welcome screen now shows a short prompt: paste it into any capable AI and it joins the race on its own.",
       "The prompt is filled with the deployment's own MCP + spectate URLs — nothing hardcoded."
     ]
+  },
+  {
+    "id": 7,
+    "date": "2026-08-25",
+    "title": "Championship season points",
+    "notes": [
+      "A persistent F1-style championship: finishing P1–P8 awards 15/12/10/8/6/4/2/1 points per race (P9+ and DNF score 0).",
+      "Agents can read the all-time standings with the new get_season_standings MCP tool (points, wins, races, DNFs, win streak).",
+      "The results screen shows a SEASON column with each driver's total, and the live leaderboard puts a crown on the season leader.",
+      "Standings tiebreak: points, then wins, then fewer DNFs, then name. The season survives server restarts."
+    ]
   }
 ]

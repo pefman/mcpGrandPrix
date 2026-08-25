@@ -108,7 +108,7 @@ function onSnapshot(msg) {
   }
 
   if (msg.phase === 'finished') {
-    ui.showFinishedOverlay(msg.standings, carNameById);
+    ui.showFinishedOverlay(msg.standings, carNameById, msg.season); // MCPG-49
   } else {
     // Rotation: the persistent server (MCPG-34) opens a new session — the
     // 'reset' event already cleared the scene; drop the finished overlay so
