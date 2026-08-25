@@ -120,7 +120,7 @@ function onSnapshot(msg) {
 conn.addEventListener('reset', () => {
   // A NEW race session started (server rotated after the results hold).
   myVote = null; // a new race's vote starts fresh
-  scene?.dispose?();
+  scene?.dispose(); // main.js holds scene; it is null-guarded above
   scene = null;
   sceneStarting = false;
   buffer?.clear?.();

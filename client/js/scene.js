@@ -6,6 +6,11 @@
  * The renderer draws into a quarter-resolution buffer that CSS upscales
  * with `image-rendering: pixelated`: chunky pixels, no antialiasing.
  * Background, fog and lights come from the track theme.
+ *
+ * Step 2 (MCPG-44): one soft directional shadow (chunky, on-brand) and a
+ * thick island slab under the ground plane — the floating-tabletop read.
+ * Shadows are a single toggle (SHADOWS_ENABLED); if they moiré at the
+ * 1/4-res buffer, flipping it off is the Step-5 lever.
  */
 import * as THREE from 'three';
 import { buildTrack } from './track.js';
@@ -18,6 +23,8 @@ export const CAR_COLORS = [
 const PIXEL_SCALE = 4; // buffer = 1/PIXEL_SCALE of the CSS size
 const ELEVATION = THREE.MathUtils.degToRad(35);
 const FIT_MARGIN = 1.05;
+const SHADOWS_ENABLED = true; // kill-switch; tune/decide in Step 5 (MCPG-47)
+const SHADOW_MAP_SIZE = 2048;
 
 /** One car mesh: a stylized box car, nose pointing local +Z. */
 function makeCarMesh(color) {
@@ -79,23 +86,46 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(theme.sky); // fog set below, once the camera distance is known
 
-  // themed lights
+  // themed lights. The shadow frustum is set once the track size is known
+  // (it must cover the circuit but not the whole ground plane — a 2048 map
+  // over ~1200 m would be ~60 cm/texel and the shadows would disappear)
   scene.add(new THREE.HemisphereLight(
     new THREE.Color(theme.ambient.sky),
     new THREE.Color(theme.ambient.ground),
     theme.ambient.intensity ?? 1.0,
   ));
   const sun = new THREE.DirectionalLight(new THREE.Color(theme.sun.color), theme.sun.intensity ?? 1.0);
-  sun.position.set(150, 400, 300);
   scene.add(sun);
 
-  const track = buildTrack(scene, trackInfo, def);
+  const track = buildTrack(scene, trackInfo, def, { shadows: SHADOWS_ENABLED });
   scene.add(track.group);
+
+  // circuit center + size (shadow setup and camera share these)
+  const center = track.bbox.getCenter(new THREE.Vector3());
+  const size = track.bbox.getSize(new THREE.Vector3());
+
+  // soft chunky shadows: only props cast, only the ground floor receives —
+  // the shadow map stays sparse and legible at the 1/4-res buffer
+  if (SHADOWS_ENABLED) {
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const spread = Math.max(size.x, size.z) + 60;
+    sun.position.set(center.x + spread * 0.45, 380, center.z + spread * 0.55);
+    sun.target.position.copy(center);
+    scene.add(sun.target);
+    const shadow = sun.shadow;
+    shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+    shadow.camera.near = 1;
+    shadow.camera.far = 1500;
+    shadow.camera.left = -spread;
+    shadow.camera.right = spread;
+    shadow.camera.top = spread;
+    shadow.camera.bottom = -spread;
+    shadow.bias = -0.0015; // keep the chunky slabs from shadowing themselves
+  }
 
   // fixed camera: from the south (+z), elevated, aimed at the track center
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 10000);
-  const center = track.bbox.getCenter(new THREE.Vector3());
-  const size = track.bbox.getSize(new THREE.Vector3());
   const distance = (size.x + size.z) * 0.75 + 400;
   // Fog tuned to the camera distance: the circuit itself stays clear, the
   // far edge of the ground plane melts into the sky colour
@@ -116,6 +146,7 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   function addCar(carId, name, slotIndex) {
     const color = CAR_COLORS[slotIndex % CAR_COLORS.length];
     const group = makeCarMesh(color);
+    if (SHADOWS_ENABLED) group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
     scene.add(group);
     cars.set(carId, { group, color, state: 'RUNNING', name });
     return color;
