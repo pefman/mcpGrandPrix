@@ -5,7 +5,8 @@
  * optional `decideReactive(view, window, rng) -> action` for Slice 3 windows.
  *
  * The agent:
- *   1. joins the race (idempotent by name); if the race is not in setup it
+ *   1. joins the race (idempotent per MCP session: this process always
+ *      controls the carId join_race returned); if the race is not in setup it
  *      lands in the pending queue and waits for the next session's setup
  *   2. polls get_race_state,
  *   3. at the start of each lap's strategy window, computes and submits a
@@ -61,9 +62,9 @@ export async function runAgent({
     await client.connect(transport);
 
     // Join loop (MCPG-34): outside `setup` (or with a full grid) the server
-    // queues this name for the NEXT session instead of failing. Wait for
-    // that session's setup, then re-join to claim the seat (idempotent by
-    // name). `queue_full` just means: back off and retry.
+    // queues this session for the NEXT session instead of failing. Wait for
+    // that session's setup, then re-join to claim the seat (idempotent per
+    // MCP session id, MCPG-58). `queue_full` just means: back off and retry.
     for (;;) {
       const joined = await callTool(client, 'join_race', { name });
       if (joined.queued) {

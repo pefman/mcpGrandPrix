@@ -3,7 +3,7 @@
  *
  * Assignment is sequential by join order (first joiner = P1 = PALETTE[0]),
  * decided at addAgent time — no sim RNG, so determinism ("same seed = same
- * race") is preserved, and it is idempotent (same name → same car → same
+ * race") is preserved, and it is idempotent (same session → same car → same
  * color). PALETTE must hold at least CONFIG.race.maxAgents entries so every
  * grid is fully distinct; if maxAgents is ever raised past the palette
  * length the overflow falls back to a neutral gray.

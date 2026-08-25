@@ -65,7 +65,6 @@ let session2;
 let spec = null; // raw WS spectator: { ws, messages }
 let clientConn = null; // the real browser client class
 let clientResets = [];
-let lateRes;
 let ghostRes;
 let lateSummary;
 let race1Summaries = [];
@@ -140,9 +139,10 @@ beforeAll(async () => {
   const drive1 = driveWindows(session1);
 
   // Mid-race: the grid is no longer in setup, so joins must queue, not fail.
+  // 'Late' is a REAL MCP agent process: it queues through its own transport
+  // session and later claims its seat with that same session id (MCPG-58).
+  // 'Ghost' is a plain joinAgent call that never re-joins (seat expires).
   await waitFor(() => orchestrator.state().phase !== 'setup', 15000, 'race 1 to leave setup');
-  lateRes = orchestrator.joinAgent('Late');
-  ghostRes = orchestrator.joinAgent('Ghost');
   const latePromise = runAgent({
     name: 'Late',
     serverUrl: baseUrl,
@@ -152,6 +152,14 @@ beforeAll(async () => {
     pollMs: 50,
     onLog: (line) => lateAgentLog.push(line),
   });
+  // Deterministic FIFO order: wait until Late's own join landed in the
+  // queue before enqueueing Ghost behind it.
+  await waitFor(
+    () => orchestrator.state().pending?.some((p) => p.name === 'Late'),
+    15000,
+    'Late to land in the pending queue',
+  );
+  ghostRes = orchestrator.joinAgent('Ghost', 'test-session-ghost');
 
   await drive1;
   race1Summaries = await Promise.all(race1Promises);
@@ -298,16 +306,13 @@ describe('persistent server with a FIFO pending queue (MCPG-34)', () => {
   });
 
   it('queued late joins instead of rejecting them (no join_failed, FIFO order)', () => {
-    expect(lateRes.status).toBe('queued');
-    expect(lateRes.position).toBe(1);
-    expect(ghostRes.status).toBe('queued');
-    expect(ghostRes.position).toBe(2);
-
     const lines = logLines();
     const queued = lines.filter((l) => l.type === 'agent_queued');
     expect(queued).toHaveLength(2);
+    // Late queued through its own MCP transport session; Ghost via a direct call.
     expect(queued[0]).toMatchObject({ name: 'Late', position: 1, raceSeq: 1 });
-    expect(queued[1]).toMatchObject({ name: 'Ghost', position: 2, raceSeq: 1 });
+    expect(typeof queued[0].agentId).toBe('string');
+    expect(queued[1]).toMatchObject({ name: 'Ghost', position: 2, raceSeq: 1, agentId: 'test-session-ghost' });
     expect(lines.filter((l) => l.type === 'join_failed')).toHaveLength(0);
     // The MCP agent that queued itself logged the queue position too.
     expect(lateAgentLog.some((l) => l.type === 'agent_queued' && l.position === 1)).toBe(true);
@@ -318,6 +323,8 @@ describe('persistent server with a FIFO pending queue (MCPG-34)', () => {
     const promoted = lines.filter((l) => l.type === 'agent_promoted');
     expect(promoted).toHaveLength(1);
     expect(promoted[0]).toMatchObject({ name: 'Late', raceSeq: 2, carId: lateSummary.carId });
+    // The claim was made by the SAME session id that queued (MCPG-58).
+    expect(promoted[0].agentId).toEqual(logLines().find((l) => l.type === 'agent_queued' && l.name === 'Late').agentId);
 
     const expired = lines.filter((l) => l.type === 'queue_expired');
     expect(expired).toHaveLength(1);

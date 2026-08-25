@@ -288,7 +288,7 @@ field, never transport-level failures.
 
 | Tool | Purpose | Idempotency |
 | --- | --- | --- |
-| `join_race` | Join with a display name. Returns `carId` (needed by other tools) and grid position. | Same name always returns the same car. |
+| `join_race` | Join with a display name. Driver identity is bound to your MCP session, not the name: the response's `carId` (needed by other tools) is exactly the one car this session controls, with final name, livery and grid position. | Same session re-joining returns the same car. A name already taken by a *different* session gets a visible auto-suffix (`name#2`, …) and its own new car — two sessions can never share a car. |
 | `get_race_state` | Full snapshot: phase, lap, window time left, all cars, standings. | Pure read. |
 | `get_car_state` | Snapshot of one car plus its standing. | Pure read. |
 | `get_standings` | Position, name, status, laps, gap to leader. | Pure read. |
