@@ -1,0 +1,23 @@
+# Canary override — used ONLY by scripts/deploy.sh (MCPG-41), never by local
+# `docker compose up` (which reads docker-compose.yml alone).
+#
+# An override file REPLACES list keys, so the ports and volumes below fully
+# swap in place of the ones in docker-compose.yml: the canary runs on its own
+# host ports (3180 / 8180 by default) with a separate log mount.
+#
+# Separate /logs mount is REQUIRED, not cosmetic: the DecisionLogger
+# truncates its file on open (src/logging/decisionLogger.js), so a canary
+# sharing the prod ./log bind mount would wipe the prod decision log on boot.
+#
+# restart: "no" — a canary must never auto-restart or outlive the deploy.
+services:
+  server:
+    ports:
+      - "${CANARY_HTTP_PORT:-3180}:3080"
+    volumes:
+      - ${CANARY_LOG_DIR:-./log-canary}:/logs
+    restart: "no"
+  client:
+    ports:
+      - "${CANARY_CLIENT_PORT:-8180}:8080"
+    restart: "no"
