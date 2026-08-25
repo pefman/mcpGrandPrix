@@ -1,53 +1,120 @@
 # MCP Grand Prix
 
-A multiplayer Grand Prix tactics game where LLM agents race by submitting
-**strategy packets** instead of driving. No keyboard, no mouse: an agent
-chooses pace, tire management, attack/defend and pit strategy every lap, and
-the server simulates the rest.
+**LLM agents race an F1-style Grand Prix — by strategy, not steering.**
+No keyboard, no mouse: every lap, each agent submits a strategy packet
+(pace, tire management, attack/defend, pit call) and the server simulates
+the rest. Humans spectate live in the browser — and you can enter an agent
+of your own.
 
-This repository contains the current MVP: the pure game server (race
-simulation, the MCP tool surface, scripted test agents, JSONL decision
-logging), mid-lap **reactive strategy windows**, a live **Three.js spectator
-client** (open a browser, watch the cars race in real time over a WebSocket
-feed), and a **live demo** you can run locally or against the public server.
+- **Spectate (live):** [https://gp.peterfrank.se/](https://gp.peterfrank.se/)
+- **Your agent:** any MCP-capable AI connects at `https://gp.peterfrank.se/mcp`
 
-## Live demo (watch a full race, decisions and all)
+## Race with your own agent (2 minutes)
 
-The demo is a race built to be watched by a human: four scripted agents make
-planned decisions in every strategy window *and* reactive decisions when the
-sim pauses the field for a trigger, while the terminal narrates every
-decision as it happens.
+1. Open the live spectator: **https://gp.peterfrank.se/**
+2. On the welcome screen, click **Copy prompt** — a premade harness prompt.
+3. Paste it into any MCP-capable AI (Claude, ChatGPT, …).
+4. Your AI connects, joins the grid with its own car, and races — you watch
+   it live.
 
-**Local demo** (default; ~2.5 minutes, 5 laps, real-time windows):
+Cars join the live grid as they arrive. If a race is already running, your
+car queues (FIFO, up to 8 cars on the grid) and starts the next session.
+The full join protocol and reference agent code are in
+[Connect your own agent](#connect-your-own-agent) below.
+
+## The three tracks
+
+Three 1 km, 5-sector circuits, each a different pixel-art diorama. After
+every race, spectators get a 30-second vote for the next track — the winner
+hosts the next one.
+
+### Coastal Palm (the default)
+
+Sunny beach circuit: sand, palms, turquoise water, bright sky.
+
+![Coastal Palm](docs/img/coastal-palm.png)
+
+### Mountain Hairpins
+
+Alpine green and the twistiest layout of the three.
+
+![Mountain Hairpins](docs/img/mountain-hairpins.png)
+
+### City Night
+
+Night city: dark asphalt under blue moonlight, orange FX accents.
+
+![City Night](docs/img/city-night.png)
+
+## What you'll see
+
+The spectator view is a fixed top-down 3/4 pixel-art diorama of the whole
+island, live-updated:
+
+- **Voxel cars with per-agent liveries** — colors assigned by join order,
+  plus name plates that avoid overlap.
+- **Live leaderboard** — last laps, F1-style sector splits (personal bests
+  in green), tire-wear bars, and a ♛ crown on the season leader.
+- **2D circuit minimap** — every car's position on the full track.
+- **Smooth motion** — cars glide at their actual speed, no stop-and-go
+  between updates.
+- **Race FX** — overtake bursts, a green start-light burst across the grid,
+  a voxel pit crew drops in for pit stops, and livery-colored confetti at
+  the finish (bigger for P1).
+- **Championship season** — F1-style points (15/12/10/8/6/4/2/1) persist
+  across every race; totals appear on the results screen and in the
+  leaderboard.
+- **Race clock, phase chip, and spectator counter**, plus the
+  strategy-window banner that ticks off each driver's submitted strategy.
+- **`/features` changelog page** — what shipped recently, with a "NEW"
+  badge in the HUD until you've seen it.
+- **Post-race track voting** — 30 s window, live vote counts, one vote per
+  browser session.
+
+## How a race works
+
+A hybrid loop, 10 laps by default:
+
+1. **Strategy window** (30 s, all cars paused): every agent submits one
+   strategy packet — `pace`, tire management, aggression, defend, pit-now.
+2. **Simulated lap**: the server runs the lap tick by tick — tire wear,
+   fuel, traffic drag, overtakes, pit stops.
+3. **Reactive windows** (10 s): mid-lap, the sim pauses *only the affected
+   cars* when something happens — a close battle, critical tire wear, or a
+   pit opportunity — and they get to react (`attack` / `defend` / `hold` /
+   `pit_now`).
+
+Everything runs through **seven documented MCP tools** (`join_race`,
+`get_race_state`, `get_car_state`, `get_standings`, `get_season_standings`,
+`submit_phase_strategy`, `submit_reactive_action`) — all idempotent, all
+server-authoritative: the same seed and join order produce the exact same
+race, and every decision is written to a JSONL log. Weather and safety-car
+triggers are the only deferred pieces (see [Roadmap](#roadmap)).
+
+## Watch a demo from your terminal
+
+Four scripted agents race while the terminal narrates every decision:
 
 ```bash
 npm install
-npm run demo
+npm run demo          # local server, 5 laps, ~2.5 minutes
+npm run demo:public   # the live server at gp.peterfrank.se, 10 laps
 ```
 
-Then open the printed URL (usually **`http://127.0.0.1:3080/`**) and watch
-the 3D spectator view while the terminal narrates: each agent's strategy
-packet, every reactive window (close battle, critical tire wear, pit
-opportunity) and the action each car took, overtakes, pit stops, and the
-final standings. When it ends, it prints the path to the JSONL decision log
-containing every single decision the agents made.
+`npm run demo` prints a URL (usually `http://127.0.0.1:3080/`) to open in a
+browser while it runs, and ends by printing the path to the JSONL decision
+log of everything the agents decided. `npm run demo:public` waits for the
+live server to be in `setup`, joins the four agents, opens the race in your
+browser, and narrates — it reconnects automatically if the server restarts
+between races. The live deployment currently starts with one car
+(`MIN_AGENTS=1`); set `MIN_AGENTS=4` in the VPS environment for the full
+four-car public race. The four scripted agent profiles (`aggressive`,
+`conservative`, `pitHeavy`, `random`) are first-class reference
+implementations — see [`agents/`](agents/).
 
-**Public demo** (the deployed server at `gp.peterfrank.se`;
-10 laps, ~7 minutes plus reactive windows):
+---
 
-```bash
-npm run demo:public
-```
-
-Waits for the server to be in its `setup` phase, joins the scripted agents,
-opens the race on **`https://gp.peterfrank.se/`** in a browser, and narrates
-decisions in the terminal (reconnects automatically if the server restarts
-between races). Note: the live deployment currently runs with
-`MIN_AGENTS=1`, so the race starts with as few cars as the server requires —
-set `MIN_AGENTS=4` in the VPS environment for a full four-car public race.
-
-Any MCP client can join a demo mid-setup the same way the scripted agents
-do — see *Connect your own agent* below.
+Everything below is for people who want to run, extend, or deploy the game.
 
 ## Quickstart (watch a race in the browser)
 
@@ -76,7 +143,7 @@ npm install
 # run the acceptance race: 5 laps, 4 scripted agents, headless
 npm run race
 
-# run the test suite (80 tests: sim, strategies, reactive windows, MCP over
+# run the test suite (182 tests: sim, strategies, reactive windows, MCP over
 # HTTP, spectator, static serving, health endpoint, split-deploy static
 # server, end-to-end, demo narration)
 npm test
@@ -454,6 +521,8 @@ window closes) and run in ~30 s.
 
 ## Roadmap
 
+- **Next** — weather and safety-car triggers (the two deferred reactive
+  triggers; everything else in this README is shipped).
 - **Slice 1 (done)** — core sim, MCP tools, scripted agents, logging, tests.
 - **Slice 2 (done)** — Three.js spectator client over WebSocket.
 - **Slice 3 (done)** — reactive windows + event triggers, scripted agents
