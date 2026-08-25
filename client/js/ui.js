@@ -34,6 +34,21 @@ export function createUi() {
   const bannerLap = $('strategy-lap');
   const bannerCountdown = $('strategy-countdown');
   const bannerCars = $('strategy-cars');
+
+  /** Banner car chip with a livery-color dot (MCPG-33). */
+  function appendCarChip(car, done, colors) {
+    const color =
+      (colors && colors[car.id]) ||
+      (typeof car.color === 'string' ? car.color : null) ||
+      '#888';
+    const chip = document.createElement('span');
+    chip.className = 'sw-car' + (done ? ' done' : '');
+    chip.innerHTML = `<i class="sw-dot" style="background:${color}"></i>`;
+    const label = document.createElement('span');
+    label.textContent = done ? `${car.name} ✓` : car.name;
+    chip.appendChild(label);
+    bannerCars.appendChild(chip);
+  }
   const lbRows = $('lb-rows');
   const overlayStart = $('overlay-start');
   const startStatus = $('start-status');
@@ -138,11 +153,7 @@ export function createUi() {
         const submitted = new Set(rw.submittedCarIds ?? []);
         for (const car of snapshot.cars) {
           if (!rw.carIds.includes(car.id)) continue;
-          const chip = document.createElement('span');
-          const done = submitted.has(car.id);
-          chip.className = 'sw-car' + (done ? ' done' : '');
-          chip.textContent = done ? `${car.name} ✓` : car.name;
-          bannerCars.appendChild(chip);
+          appendCarChip(car, submitted.has(car.id), this._colors);
         }
         return;
       }
@@ -150,12 +161,7 @@ export function createUi() {
       bannerLap.textContent = snapshot.totalLaps ? `— LAP ${snapshot.currentLap}` : '';
       bannerCountdown.textContent = `${Math.ceil(snapshot.windowRemainingS ?? 0)}s`;
       bannerCars.textContent = '';
-      for (const car of snapshot.cars) {
-        const chip = document.createElement('span');
-        chip.className = 'sw-car' + (car.submittedStrategy ? ' done' : '');
-        chip.textContent = car.submittedStrategy ? `${car.name} ✓` : car.name;
-        bannerCars.appendChild(chip);
-      }
+      for (const car of snapshot.cars) appendCarChip(car, car.submittedStrategy, this._colors);
     },
 
     setLeaderboard(snapshot) {
@@ -227,6 +233,10 @@ export function createUi() {
       for (const entry of standings) {
         const row = document.createElement('div');
         row.className = 'final-row';
+        const color =
+          (this._colors && this._colors[entry.carId]) ||
+          (typeof entry.color === 'string' ? entry.color : null) ||
+          '#888';
         const name = carNameById[entry.carId] ?? entry.name ?? entry.carId;
         const gap =
           entry.position === 1
@@ -234,7 +244,7 @@ export function createUi() {
             : entry.finishTimeS != null && standings[0].finishTimeS != null
               ? `+${(entry.finishTimeS - standings[0].finishTimeS).toFixed(1)}s`
               : '';
-        row.innerHTML = `<span class="lb-pos">${entry.position}.</span><span class="lb-nm">${name}</span><span class="f-gap">${gap}</span>`;
+        row.innerHTML = `<span class="lb-pos">${entry.position}.</span><i class="sw-dot" style="background:${color}"></i><span class="lb-nm">${name}</span><span class="f-gap">${gap}</span>`;
         finalStandings.appendChild(row);
       }
     },

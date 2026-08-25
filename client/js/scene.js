@@ -143,8 +143,13 @@ export function createSpectatorScene(canvas, trackInfo, def) {
 
   const cars = new Map(); // carId -> { group, color, state, name }
 
-  function addCar(carId, name, slotIndex) {
-    const color = CAR_COLORS[slotIndex % CAR_COLORS.length];
+  function addCar(carId, name, slotIndex, serverColor) {
+    // Prefer the server-assigned livery color (join order, MCPG-33); fall
+    // back to the legacy client palette for pre-change servers.
+    const color =
+      typeof serverColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(serverColor)
+        ? serverColor
+        : CAR_COLORS[slotIndex % CAR_COLORS.length];
     const group = makeCarMesh(color);
     if (SHADOWS_ENABLED) group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
     scene.add(group);

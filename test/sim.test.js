@@ -3,6 +3,7 @@ import { Track } from '../src/track.js';
 import { parseStrategy, createCar, resetCarIdCounter } from '../src/sim/car.js';
 import { Simulation } from '../src/sim/simulation.js';
 import { CONFIG } from '../src/config.js';
+import { PALETTE, colorForSlot, LIVERY_FALLBACK } from '../src/sim/liveries.js';
 
 const runUntilFinished = (sim, maxTicks = 100000) => {
   let ticks = 0;
@@ -96,6 +97,50 @@ describe('parseStrategy', () => {
   it('rejects non-objects', () => {
     const { errors } = parseStrategy(null);
     expect(errors).toEqual(['strategy must be an object']);
+  });
+});
+
+describe('Liveries: palette + join-order assignment', () => {
+  it('palette holds at least maxAgents distinct hexes (clash guard)', () => {
+    expect(PALETTE.length).toBeGreaterThanOrEqual(CONFIG.race.maxAgents);
+    expect(new Set(PALETTE).size).toBe(PALETTE.length);
+    for (const hex of PALETTE) expect(hex).toMatch(/^#[0-9a-fA-F]{6}$/);
+  });
+
+  it('colorForSlot falls back to the neutral gray past the palette', () => {
+    expect(colorForSlot(999)).toBe(LIVERY_FALLBACK);
+    expect(colorForSlot(-1)).toBe(LIVERY_FALLBACK);
+  });
+
+  it('assigns sequential join-order colors and re-join is idempotent', () => {
+    const events = [];
+    const sim = makeSim({ onEvent: (e) => events.push(e) });
+    const a = sim.addAgent('A', 'a');
+    const b = sim.addAgent('B', 'b');
+    expect(a.color).toBe(PALETTE[0]);
+    expect(b.color).toBe(PALETTE[1]);
+
+    const again = sim.addAgent('A', 'a-other'); // idempotent re-join
+    expect(again).toBe(a);
+    expect(again.color).toBe(PALETTE[0]);
+
+    // the agent_joined log event carries the color
+    expect(events.filter((e) => e.type === 'agent_joined').map((e) => e.color)).toEqual([
+      PALETTE[0],
+      PALETTE[1],
+    ]);
+  });
+
+  it('every snapshot surface carries the car color', () => {
+    const sim = makeSim();
+    sim.addAgent('A', 'a');
+    sim.addAgent('B', 'b');
+    const state = sim.state();
+    expect(state.cars.map((c) => c.color)).toEqual([PALETTE[0], PALETTE[1]]);
+    expect(state.standings.map((s) => s.color)).toEqual([PALETTE[0], PALETTE[1]]);
+    // car state view (what get_car_state returns)
+    const carView = state.cars[0];
+    expect(carView.color).toBe(PALETTE[0]);
   });
 });
 
