@@ -217,6 +217,13 @@ export class SpectatorConnection extends EventTarget {
  * fresh baseline. When the feed is stale (>500 ms without a snapshot) the
  * extrapolation is clamped to 500 ms past the newest sample, so a dead feed
  * holds the car instead of extrapolating forever.
+ *
+ * Paused phases (MCPG-56): outside 'simulation' the sim is paused and
+ * snapshot positions are frozen, but RUNNING cars still report their last
+ * tick's speedMs. Extrapolating from that stale speed makes the car creep
+ * forward until the next-sample clamp snaps it back — a visible oscillation.
+ * So while the newest snapshot's phase is not 'simulation', sample() holds
+ * the newest position exactly instead of extrapolating.
  */
 export class CarPositionBuffer {
   constructor(trackLengthM) {
@@ -225,12 +232,14 @@ export class CarPositionBuffer {
     this.anchors = new Map(); // carId -> {at, su, speed}
     this._maxAgeMs = 2000;
     this._staleHoldMs = 500;
+    this._lastPhase = null; // phase of the newest pushed snapshot
     // shared result (Step 5, MCPG-47: the render loop samples every car
     // every frame) — callers must read it before the next sample() call
     this._out = { s: 0, status: null };
   }
 
   push(snapshot, receivedAt) {
+    this._lastPhase = snapshot.phase ?? null;
     const L = this.trackLengthM;
     for (const car of snapshot.cars) {
       let entries = this.cars.get(car.id);
@@ -262,7 +271,8 @@ export class CarPositionBuffer {
   /**
    * Sample a car's track distance at `renderAt` (client clock, ms).
    * Returns { s, status } or null if the car is unknown.
-   * Speed-based extrapolation from the car's anchor (see class doc):
+   * Paused phase -> hold the newest position (MCPG-56). Otherwise
+   * speed-based extrapolation from the car's anchor (see class doc):
    * next-sample clamp re-anchors, stale feed holds.
    */
   sample(carId, renderAt) {
@@ -271,6 +281,11 @@ export class CarPositionBuffer {
     const out = this._out; // shared result — caller reads it before the next sample()
     const L = this.trackLengthM;
     const last = entries[entries.length - 1];
+    if (this._lastPhase != null && this._lastPhase !== 'simulation') {
+      out.s = ((last.su % L) + L) % L;
+      out.status = last.status;
+      return out;
+    }
     let anchor = this.anchors.get(carId);
     if (!anchor) {
       anchor = { at: last.at, su: last.su, speed: last.speed };
@@ -295,5 +310,6 @@ export class CarPositionBuffer {
   clear() {
     this.cars.clear();
     this.anchors.clear();
+    this._lastPhase = null;
   }
 }
