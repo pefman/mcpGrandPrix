@@ -33,6 +33,16 @@ import { LIVERY_FALLBACK } from './liveries.js';
  * @property {CarStrategy} strategy // active strategy for the current lap
  * @property {boolean} submittedStrategy // whether this car has submitted for the current window
  * @property {number} finishTimeS   // race time of finishing (RUNNING only: null)
+ * @property {number} currentSector       // 1-based sector of the current lap (MCPG-31)
+ * @property {number[]} currentSectorTimesS // in-progress lap splits, null until each sector ends
+ * @property {number|null} lastLapTimeS  // last completed lap time (null before the first lap)
+ * @property {number|null} bestLapTimeS  // car's best lap so far
+ * @property {number[]} bestSectorTimesS  // car's personal best per sector (null until set)
+ * Timing bookkeeping (internal, not in the snapshot):
+ * @property {number} lapStartDist    total distance at the start of the current lap
+ * @property {number} lapStartTimeS   sim time the current lap started
+ * @property {number} sectorStartDist total distance at the start of the current sector
+ * @property {number} sectorStartTimeS sim time the current sector started
  */
 
 let nextCarId = 1;
@@ -55,6 +65,13 @@ export function createCar({ name, agentId, distTraveled = 0, color = LIVERY_FALL
     strategy: defaultStrategy(),
     submittedStrategy: false,
     finishTimeS: null,
+    // Sector/lap timing (MCPG-31). The arrays are sized to the track's
+    // sectorCount by Simulation.addAgent; the snapshot tolerates empty ones.
+    currentSector: 1,
+    currentSectorTimesS: [],
+    lastLapTimeS: null,
+    bestLapTimeS: null,
+    bestSectorTimesS: [],
   };
   return car;
 }
@@ -121,6 +138,12 @@ export function carSnapshot(car) {
     pitRequested: car.pitRequested,
     strategy: { ...car.strategy },
     submittedStrategy: car.submittedStrategy,
+    // Sector/lap timing, server-authoritative (MCPG-31). null = not set yet.
+    currentSector: car.currentSector ?? 1,
+    currentSectorTimesS: (car.currentSectorTimesS ?? []).map((t) => (t == null ? null : round2(t))),
+    lastLapTimeS: car.lastLapTimeS == null ? null : round2(car.lastLapTimeS),
+    bestLapTimeS: car.bestLapTimeS == null ? null : round2(car.bestLapTimeS),
+    bestSectorTimesS: (car.bestSectorTimesS ?? []).map((t) => (t == null ? null : round2(t))),
   };
 }
 

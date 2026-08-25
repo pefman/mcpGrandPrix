@@ -113,4 +113,18 @@ describe('race FX + voxel UI skin (MCPG-46)', () => {
     expect(skin.chipRadius).toBe('0px');
     expect(errors).toEqual([]);
   });
+
+  it('mounts the 2D minimap panel above the features badge (MCPG-31)', async () => {
+    const ok = await page.evaluate(() => {
+      const panel = document.querySelector('#minimap-panel');
+      const badge = document.querySelector('#features-badge');
+      const canvas = document.querySelector('#minimap');
+      if (!panel || !canvas || !badge) return false;
+      const p = panel.getBoundingClientRect();
+      const b = badge.getBoundingClientRect();
+      // the map panel must sit fully above the features badge
+      return p.left >= 0 && p.bottom <= b.top && p.width > 0;
+    });
+    expect(ok).toBe(true);
+  });
 });

@@ -7,6 +7,7 @@
 import { SpectatorConnection, CarPositionBuffer } from './spectatorClient.js';
 import { createSpectatorScene } from './scene.js';
 import { createUi } from './ui.js';
+import { createMinimap } from './minimap.js';
 import { loadTrackDef } from './tracks.js';
 import { buildHarnessPrompt, HARNESS_PROMPT_REVISION } from './harnessPrompt.js';
 import { resolveServerOrigin } from './resolveUrl.js';
@@ -21,6 +22,7 @@ const conn = new SpectatorConnection();
 
 let scene = null;
 let sceneStarting = false;
+let minimap = null;
 let buffer = null;
 let lastSnapshot = null;
 const carNameById = {};
@@ -122,6 +124,8 @@ conn.addEventListener('reset', () => {
   myVote = null; // a new race's vote starts fresh
   scene?.dispose(); // main.js holds scene; it is null-guarded above
   scene = null;
+  minimap?.dispose();
+  minimap = null;
   sceneStarting = false;
   buffer?.clear?.();
   buffer = null;
@@ -140,6 +144,7 @@ function frame() {
 
   if (buffer && lastSnapshot) {
     const carsById = new Map(lastSnapshot.cars.map((c) => [c.id, c]));
+    const mmCars = [];
     for (const carId of scene.carIds()) {
       const smp = buffer.sample(carId, renderAt);
       if (!smp) continue;
@@ -148,7 +153,13 @@ function frame() {
       const car = carsById.get(carId);
       const extra = smp.status === 'PITTING' && car ? `PIT ${car.pitTimeLeftS?.toFixed(0)}s` : '';
       ui.placeLabel(carId, carNameById[carId] ?? carId, scene.labelScreenPos(carId), extra);
+      // minimap (MCPG-31): same world spot the 3D view is showing right now
+      const wp = scene.carWorldPos(carId);
+      if (wp) mmCars.push({ x: wp.x, z: wp.z, color: carColorById[carId] || '#888', status: smp.status });
     }
+    minimap?.draw(mmCars);
+  } else {
+    minimap?.draw([]); // outline only while the buffer is empty
   }
   scene.tick(now); // advance FX particles (runs even while the buffer is empty)
   scene.render();
@@ -161,6 +172,8 @@ async function init(snapshotMsg) {
   // falls back to the legacy ring for pre-MCPG-27 servers.
   const def = await loadTrackDef(snapshotMsg.track);
   scene = createSpectatorScene(canvas, snapshotMsg.track, def);
+  // 2D circuit minimap (MCPG-31), fed from scene.track.map (same curve as 3D)
+  minimap = createMinimap(document.getElementById('minimap'), scene.track.map);
   ui.setTrack(def.name);
   registerKnownCars();
 }

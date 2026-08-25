@@ -35,9 +35,14 @@
   <!-- right: leaderboard -->
   <div id="leaderboard">
     <div class="lb-head">
-      <span class="lb-pos">#</span><span class="lb-name">DRIVER</span><span class="lb-laps">LAP</span><span class="lb-gap">GAP</span>
+      <span class="lb-pos">#</span><span class="lb-name">DRIVER</span><span class="lb-laps">LAP</span><span class="lb-last">LAST</span><span class="lb-spl">SPL</span><span class="lb-gap">GAP</span>
     </div>
     <div id="lb-rows"></div>
+  </div>
+
+  <!-- bottom-left: 2D circuit minimap (MCPG-31), above the features badge -->
+  <div id="minimap-panel">
+    <canvas id="minimap"></canvas>
   </div>
 
   <!-- right: pending queue for the next race (persistent server, MCPG-34) -->

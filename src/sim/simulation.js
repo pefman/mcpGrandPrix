@@ -78,6 +78,17 @@ export class Simulation {
     // equals grid position (later joiners start further behind on track).
     const distTraveled = (CONFIG.race.maxAgents + 1 - this.cars.length) * CONFIG.grid.formationGapM;
     const car = createCar({ name, agentId, distTraveled, color: colorForSlot(this.cars.length) });
+    // Sector/lap timing state (MCPG-31). Lap 1 starts at race start (sim
+    // time 0) from the car's grid position; its first "sector 1" split runs
+    // from the grid to the first sector line (standard "splits start from
+    // the grid" behavior).
+    car.currentSector = this.track.sectorForPosition(car.position);
+    car.currentSectorTimesS = new Array(this.track.sectorCount).fill(null);
+    car.bestSectorTimesS = new Array(this.track.sectorCount).fill(null);
+    car.lapStartDist = car.distTraveled;
+    car.lapStartTimeS = 0;
+    car.sectorStartDist = Math.floor(car.distTraveled / this.track.sectorLengthM) * this.track.sectorLengthM;
+    car.sectorStartTimeS = 0;
     this.cars.push(car);
     this._emit('agent_joined', { carId: car.id, name, color: car.color, position: this.cars.length + 1 });
     return car;
@@ -316,6 +327,10 @@ export class Simulation {
   /**
    * Advance the simulation by one tick. Only valid in phase 'simulation'.
    * Returns the tick summary {overtakes, laps, finishes}.
+   *
+   * (MCPG-31) Sector/lap timing advances inside the move loop via
+   * _advanceTiming(): a boundary crossed mid-tick is interpolated to its
+   * exact sim time, because a car moves at constant speed during the tick.
    */
   tick() {
     if (this.phase !== 'simulation') throw new Error(`cannot tick in phase '${this.phase}'`);
@@ -361,10 +376,14 @@ export class Simulation {
       car.speedMs = speed;
     }
 
-    // 3) move
+    // 3) move. t0..t0+dt is the sim-time span of this tick; the timing code
+    // interpolates any sector/line crossing to the exact sim time it happened.
+    const t0 = this.raceTimeS;
     let lapEvents = 0;
     for (const car of running) {
+      const oldDist = car.distTraveled;
       car.distTraveled += car.speedMs * dt;
+      this._advanceTiming(car, oldDist, car.distTraveled, t0, t0 + dt);
       const laps = this.track.lapsCompleted(car.distTraveled);
       if (laps > car.completedLaps) {
         this._onLapComplete(car, laps);
@@ -421,7 +440,11 @@ export class Simulation {
       const behind = this.carById(pending.behindId);
       const ahead = this.carById(pending.aheadId);
       if (result.success && behind && ahead && behind.status === 'RUNNING' && ahead.status === 'RUNNING') {
+        const oldDist = behind.distTraveled;
         behind.distTraveled = ahead.distTraveled + 1;
+        // Same timing code path as the tick's move (MCPG-31); the jump is
+        // instantaneous in sim time, so t0 === t1.
+        this._advanceTiming(behind, oldDist, behind.distTraveled, this.raceTimeS, this.raceTimeS);
         behind.position = this.track.lapPosition(behind.distTraveled);
         this._emit('overtake', {
           carId: behind.id,
@@ -467,6 +490,63 @@ export class Simulation {
     return { type: window.trigger, pitRequestedCarIds: pitCars };
   }
 
+  /**
+   * Server-authoritative sector + lap timing (MCPG-31).
+   *
+   * Called from the tick's move loop (t0..t1 = the tick's sim-time span) and
+   * from the reactive overtake jump (t0 === t1: instantaneous). A car moves
+   * at constant speed within a tick, so a boundary crossed mid-tick is
+   * interpolated to its exact sim time: time(d) = t0 + (d - oldDist) /
+   * (newDist - oldDist) * (t1 - t0). Pure sim time — no wall clock — so the
+   * deterministic-replay invariant holds.
+   *
+   * Sector boundaries sit at every multiple of sectorLengthM in total
+   * distance. Because lengthM is a multiple of sectorLengthM (enforced by
+   * the Track constructor), line crossings are a subset of those: crossing
+   * a multiple of lengthM also completes the lap.
+   *
+   * PITTING cars never reach this method (0 m moved), so pit-stop time is
+   * naturally included in the next sector/lap time. RETIRED cars keep
+   * whatever timing they had — it is never wiped.
+   */
+  _advanceTiming(car, oldDist, newDist, t0, t1) {
+    if (newDist <= oldDist) return; // no move — nothing crossed
+    const { sectorLengthM, sectorCount } = this.track;
+    const span = newDist - oldDist;
+    const timeAt = (d) => t0 + ((d - oldDist) / span) * (t1 - t0);
+
+    let k = Math.floor(oldDist / sectorLengthM) + 1; // boundary index: b = k * sectorLengthM
+    while (k * sectorLengthM <= newDist) {
+      const b = k * sectorLengthM;
+      // Boundary b = k*SL ends 0-based sector (k-1) % sectorCount.
+      const crossedIdx = (k - 1) % sectorCount;
+      const sectorTimeS = timeAt(b) - car.sectorStartTimeS;
+      car.currentSectorTimesS[crossedIdx] = sectorTimeS;
+      if (car.bestSectorTimesS[crossedIdx] == null || sectorTimeS < car.bestSectorTimesS[crossedIdx]) {
+        car.bestSectorTimesS[crossedIdx] = sectorTimeS;
+      }
+      // The car enters 0-based sector k % sectorCount (b = k*SL is its start).
+      car.currentSector = (k % sectorCount) + 1;
+      car.sectorStartDist = b;
+      car.sectorStartTimeS = timeAt(b);
+
+      // k % sectorCount === 0  <=>  b % lengthM === 0, i.e. the finish line
+      // (integer modulo, avoiding float-modulo pitfalls).
+      if (k % sectorCount === 0) {
+        const lapTimeS = timeAt(b) - car.lapStartTimeS;
+        car.lastLapTimeS = lapTimeS;
+        if (car.bestLapTimeS == null || lapTimeS < car.bestLapTimeS) car.bestLapTimeS = lapTimeS;
+        car.lapStartDist = b;
+        car.lapStartTimeS = timeAt(b);
+        car.currentSectorTimesS = new Array(sectorCount).fill(null);
+        car.currentSector = 1;
+        car.sectorStartDist = b;
+        car.sectorStartTimeS = timeAt(b);
+      }
+      k += 1;
+    }
+  }
+
   _onLapComplete(car, laps) {
     const t = CONFIG.tires;
     const wear =
@@ -480,6 +560,10 @@ export class Simulation {
       lap: laps,
       tireWearPct: Math.round(car.tireWear * 10) / 10,
       fuelKg: Math.round(car.fuelKg * 10) / 10,
+      // Server-timed lap (MCPG-31) so the decision log has timing without
+      // replaying the sim. null until the first line crossing.
+      lapTimeS: car.lastLapTimeS == null ? null : Math.round(car.lastLapTimeS * 100) / 100,
+      bestLapTimeS: car.bestLapTimeS == null ? null : Math.round(car.bestLapTimeS * 100) / 100,
     });
 
     if (laps >= this.totalLaps) {
