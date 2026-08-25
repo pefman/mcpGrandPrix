@@ -16,6 +16,14 @@
  *                 2026-08-23). The client pings ~every 30 s while the race is
  *                 running; we answer so the traffic is guaranteed inbound.
  *
+ * Post-race track voting (MCPG-28): while the orchestrator's voting window
+ * is open the hub broadcasts { type: 'voting', ... } once per window and
+ * snapshots carry phase 'voting' + a vote block (options with live counts,
+ * countdown). A spectator sends { type: 'vote', trackId } — one vote per WS
+ * session, re-voting replaces it, the server is authoritative. When the
+ * window closes the hub broadcasts { type: 'vote_result', ... } and finalizes
+ * (the next race resets it as usual).
+ *
  * The hub also runs a protocol-level heartbeat (WS ping every 30 s, dead
  * sockets terminated) so the client set stays clean.
  *
@@ -63,16 +71,27 @@ export function buildHelloMessage(session) {
   });
 }
 
-export function createSpectatorHub(httpServer, session, {
+export function createSpectatorHub(httpServer, initialSession, {
+  /**
+   * MCPG-34 rotation support: a getter for the CURRENT session. When the
+   * orchestrator opens a new race session it calls `reset()`, which rebinds
+   * `session` to `getSession()` so voting (MCPG-28) and snapshots keep
+   * working across rotations. Bare single-session usage can omit it.
+   */
+  getSession = () => initialSession,
+
   path = SPECTATE_PATH,
   broadcastIntervalMs = 100, // 10 Hz — plenty for 8 cars, small JSON
   heartbeatIntervalMs = 30000,
   onEvent = () => {}, // (event) -> void, e.g. decision-logger sink
 } = {}) {
   const wss = new WebSocketServer({ server: httpServer, path });
+  let session = initialSession;
   const clients = new Set();
+  const clientIds = new Map(); // ws -> id; the vote is keyed per session (MCPG-28)
   let stopped = false;
   let finishedNotified = session.state().phase === 'finished';
+  let votingActive = false; // a voting window is open (MCPG-28)
 
   const sendToAll = (msg) => {
     for (const client of clients) {
@@ -81,21 +100,53 @@ export function createSpectatorHub(httpServer, session, {
   };
 
   const sendFinalIfDue = () => {
-    if (finishedNotified || session.state().phase !== 'finished') return;
+    const s = getSession();
+    if (finishedNotified || s.state().phase !== 'finished') return;
     finishedNotified = true;
     onEvent({ type: 'spectator_final_broadcast', spectators: clients.size });
-    sendToAll(buildSnapshotMessage(session, clients.size));
+    sendToAll(buildSnapshotMessage(s, clients.size));
   };
 
   const broadcast = () => {
     if (stopped || clients.size === 0) return;
-    if (session.state().phase === 'finished') {
+    // MCPG-34: always read from the current session (the closure's `session`
+    // is rebound by reset() on rotation). phaseView overlays 'voting' while
+    // the orchestrator's vote window is open (MCPG-28).
+    const s = getSession();
+    const phase = s.phaseView;
+    if (phase === 'voting') {
+      // MCPG-28: first finished snapshot of the window carries the vote
+      // block (counts = 0, full countdown) and starts the per-window vote
+      // broadcast; later ticks refresh the live block until it is gone.
+      const st = s.stateView;
+      if (!votingActive) {
+        votingActive = true;
+        finishedNotified = true; // the finished snapshot is the voting one
+        const vote = st.vote;
+        onEvent({ type: 'voting_broadcast', raceId: vote.raceId, raceSeq: vote.raceSeq, spectators: clients.size });
+        sendToAll(JSON.stringify({ type: 'voting', ...vote }));
+      }
+      sendToAll(JSON.stringify({
+        type: 'snapshot',
+        ...st,
+        serverNowMs: Date.now(),
+        finished: true,
+        pending: st.pending ?? [],
+        vote: { ...st.vote, remainingS: Math.max(0, Math.round(st.vote.remainingS * 100) / 100) },
+        spectators: clients.size,
+      }));
+      return;
+    }
+    if (votingActive) {
+      votingActive = false; // the phase left 'voting' (window closed)
+    }
+    if (phase === 'finished') {
       // Send the final snapshot exactly once on the transition, then stay
       // silent (the connection stays open for the results screen).
       sendFinalIfDue();
       return;
     }
-    sendToAll(buildSnapshotMessage(session, clients.size));
+    sendToAll(buildSnapshotMessage(s, clients.size));
   };
 
   const broadcastTimer = setInterval(broadcast, broadcastIntervalMs);
@@ -116,11 +167,17 @@ export function createSpectatorHub(httpServer, session, {
   wss.on('connection', (ws, req) => {
     ws.isAlive = true;
     clients.add(ws);
+    clientIds.set(ws, `spec-${clients.size + 1}-${Date.now().toString(36)}`);
     onEvent({ type: 'spectator_connected', spectators: clients.size, remote: req.socket.remoteAddress });
 
     // hello + immediate full snapshot: covers reconnects (snapshots are
     // self-contained, so no replay history is needed).
     ws.send(buildHelloMessage(session));
+    if (session.votingInfo) {
+      // (Re)connected into an open voting window (MCPG-28): get the window
+      // state now, like the hello on connect.
+      ws.send(JSON.stringify({ type: 'voting', ...session.votingInfo }));
+    }
     ws.send(buildSnapshotMessage(session, clients.size));
 
     ws.on('message', (raw) => {
@@ -133,11 +190,18 @@ export function createSpectatorHub(httpServer, session, {
       }
       if (msg && msg.type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong', t: Date.now() }));
+      } else if (msg && msg.type === 'vote' && typeof session.castVote === 'function') {
+        // MCPG-28: one vote per WS session (idempotent; re-voting replaces).
+        const res = session.castVote(clientIds.get(ws), msg.trackId);
+        ws.send(JSON.stringify(res.accepted
+          ? { type: 'vote_ack', trackId: res.trackId, totalVotes: res.totalVotes }
+          : { type: 'vote_rejected', error: res.error }));
       }
     });
 
     ws.on('close', () => {
       clients.delete(ws);
+      clientIds.delete(ws);
       onEvent({ type: 'spectator_disconnected', spectators: clients.size });
     });
     ws.on('error', () => {}); // close follows
@@ -151,6 +215,8 @@ export function createSpectatorHub(httpServer, session, {
    */
   const reset = () => {
     finishedNotified = false;
+    votingActive = false;
+    session = getSession(); // rebind to the new session (MCPG-34)
     const hello = buildHelloMessage(session);
     const snap = buildSnapshotMessage(session, clients.size);
     sendToAll(hello);
@@ -169,6 +235,18 @@ export function createSpectatorHub(httpServer, session, {
      * sockets while the process is still alive.
      */
     finalize: sendFinalIfDue,
+    /**
+     * MCPG-28: the voting window closed — broadcast the result to everyone,
+     * log it, then send the one post-vote finished snapshot (the results
+     * screen with the decided track). Idempotent per window.
+     */
+    finalizeVote: (result) => {
+      sendToAll(JSON.stringify({ type: 'vote_result', ...result }));
+      onEvent({ type: 'vote_result_broadcast', raceId: result.raceId, raceSeq: result.raceSeq, winner: result.trackId, source: result.source, totalVotes: result.totalVotes, spectators: clients.size });
+      votingActive = false;
+      finishedNotified = false; // let sendFinalIfDue fire once more
+      sendFinalIfDue();
+    },
     close: () => {
       stopped = true;
       clearInterval(broadcastTimer);

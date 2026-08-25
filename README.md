@@ -155,6 +155,7 @@ the same spectator build standalone on port 8080 (split-deploy demo).
 | `MIN_AGENTS` | `4` | cars required before the race leaves `setup` and opens the first strategy window. Set to `1` for solo / public-demo play. |
 | `RESULTS_HOLD_SECONDS` | `60` | how long the finished result is held before the next race session opens (persistent server). |
 | `PENDING_GRACE_SECONDS` | `30` | a queued agent must re-`join_race` within this window after the next session opens, or its reserved seat is dropped from the FIFO pending queue. |
+| `VOTE_WINDOW_SECONDS` | `30` | post-race spectator track-voting window (s). Set to `0` to disable voting entirely (track rotation falls back to deterministic seeding). |
 
 For bare local runs, the CLI args to `node src/server/main.js`
 (port, laps, window s, tick delay ms, seed, log file) override the env vars.

@@ -62,6 +62,7 @@ html, body {
 .phase-simulation { background: rgba(55, 224, 141, 0.18); color: var(--green); }
 .phase-finished { background: rgba(176, 124, 255, 0.2); color: var(--purple); }
 .phase-reactive_window { background: rgba(255, 176, 32, 0.2); color: var(--amber); }
+.phase-voting { background: rgba(55, 224, 141, 0.18); color: var(--green); }
 
 #track-line {
   color: var(--muted);
@@ -190,6 +191,48 @@ html, body {
 }
 /* welcome screen: prompt block is interactive inside the pointer-events:none overlay */
 #overlay-start .overlay-card { pointer-events: auto; }
+#overlay-vote .overlay-card { pointer-events: auto; }
+.vote-countdown {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--amber);
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+#vote-options { margin-top: 14px; display: grid; gap: 10px; text-align: left; }
+.vote-option {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+}
+.vote-option-name { font-size: 14px; font-weight: 600; }
+.vote-option-meta { font-size: 11px; color: var(--muted); }
+.vote-option-btn {
+  padding: 7px 16px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(139, 149, 167, 0.25);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.vote-option-btn:hover { filter: brightness(1.2); }
+.vote-option.mine .vote-option-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.vote-option.mine { border-color: var(--accent); }
+.vote-option-result {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--green);
+}
 .harness-prompt-label { margin-top: 18px; font-size: 14px; font-weight: 600; }
 #harness-prompt {
   margin-top: 8px;

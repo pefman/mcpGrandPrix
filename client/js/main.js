@@ -24,6 +24,25 @@ let lastSnapshot = null;
 const carNameById = {};
 const carColorById = {};
 
+// Post-race track vote (MCPG-28): the server is authoritative, this is only
+// local UI state — which track this browser voted for + the last vote view.
+let myVote = null;
+let lastVote = null;
+
+ui.setVoteHandler((trackId) => {
+  conn.send({ type: 'vote', trackId });
+});
+
+function renderVote(vote) {
+  lastVote = vote;
+  ui.showVotePanel(vote, { myVote });
+}
+
+function hideVotePanel() {
+  lastVote = null;
+  ui.hideVotePanel();
+}
+
 /** Register cars from the latest snapshot with a freshly-created scene. */
 function registerKnownCars() {
   if (!scene || !lastSnapshot) return;
@@ -77,6 +96,13 @@ function onSnapshot(msg) {
     ui.hideStartOverlay();
   }
 
+  if (msg.phase === 'voting') {
+    // MCPG-28: live vote panel (counts refresh with each snapshot).
+    renderVote(msg.vote);
+  } else {
+    hideVotePanel();
+  }
+
   if (msg.phase === 'finished') {
     ui.showFinishedOverlay(msg.standings, carNameById);
   } else {
@@ -91,7 +117,8 @@ function onSnapshot(msg) {
 
 conn.addEventListener('reset', () => {
   // A NEW race session started (server rotated after the results hold).
-  scene?.dispose?.();
+  myVote = null; // a new race's vote starts fresh
+  scene?.dispose?();
   scene = null;
   sceneStarting = false;
   buffer?.clear?.();
@@ -142,6 +169,27 @@ conn.addEventListener('snapshot', (ev) => {
   init(ev.detail);
   onSnapshot(ev.detail);
 });
+// ---- post-race track vote (MCPG-28) ----
+conn.addEventListener('voting', (ev) => {
+  // Window opened (or a (re)connect into an open window).
+  renderVote(ev.detail);
+});
+conn.addEventListener('vote_ack', (ev) => {
+  myVote = ev.detail.trackId;
+  if (lastVote) renderVote(lastVote);
+});
+conn.addEventListener('vote_rejected', () => {
+  // Server ignored it (e.g. no window open); the panel refreshes from
+  // snapshots, so there is nothing to roll back locally.
+});
+conn.addEventListener('vote_result', (ev) => {
+  // The window closed: keep the panel up as the results list (winner
+  // highlighted) until the next session's rotation resets it.
+  const winner = ev.detail.trackId;
+  if (lastVote) renderVote({ ...lastVote, winner });
+  myVote = null;
+});
+
 conn.addEventListener('status', (ev) => {
   // 'disconnected' during the results hold looks like a drop; keep the
   // finished overlay up (the snapshot feed resumes on reconnect).

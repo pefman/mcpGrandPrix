@@ -12,6 +12,7 @@ const PHASE_LABEL = {
   simulation: 'RACE LIVE',
   reactive_window: 'REACTIVE WINDOW',
   finished: 'FINISHED',
+  voting: 'VOTING',
 };
 
 function fmtClock(s) {
@@ -39,6 +40,9 @@ export function createUi() {
   const startJoined = $('start-joined');
   const overlayFinished = $('overlay-finished');
   const finalStandings = $('final-standings');
+  const overlayVote = $('overlay-vote');
+  const voteCountdown = $('vote-countdown');
+  const voteOptions = $('vote-options');
   const pendingPanel = $('pending-panel');
   const pendingCount = $('pending-count');
   const pendingRows = $('pending-rows');
@@ -239,6 +243,67 @@ export function createUi() {
       overlayFinished.classList.add('hidden');
     },
 
+    /**
+     * Post-race track vote (MCPG-28): build the option buttons once, then
+     * refresh the live vote counts + countdown each snapshot. `myVote` is
+     * this browser session's current pick (highlighted). When `winner` is
+     * set the buttons turn into a result list.
+     */
+    showVotePanel(vote, { myVote = null } = {}) {
+      overlayVote.classList.remove('hidden');
+      overlayFinished.classList.add('hidden');
+      voteCountdown.textContent = vote.winner ? 'DECIDED' : `Closes in ${Math.ceil(vote.remainingS ?? 0)}s`;
+      // build/refresh the option rows
+      if (voteOptions.childElementCount !== vote.options.length) {
+        voteOptions.textContent = '';
+        for (const o of vote.options) {
+          const row = document.createElement('div');
+          row.className = 'vote-option';
+          row.dataset.trackId = o.id;
+          const right = document.createElement('span');
+          row.innerHTML = `<span class="vote-option-name"></span><span class="vote-option-meta"></span>`;
+          row.querySelector('.vote-option-name').textContent = o.name;
+          row.querySelector('.vote-option-meta').textContent = `${o.lengthM} m`;
+          row.appendChild(right);
+          if (!vote.winner) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'vote-option-btn';
+            btn.textContent = 'Vote';
+            btn.addEventListener('click', () => this._voteHandler && this._voteHandler(o.id));
+            right.replaceWith(btn);
+          }
+          voteOptions.appendChild(row);
+        }
+      }
+      for (const row of voteOptions.children) {
+        const o = vote.options.find((x) => x.id === row.dataset.trackId);
+        if (!o) continue;
+        row.classList.toggle('mine', !vote.winner && myVote === o.id);
+        const right = row.querySelector('button') || row.lastElementChild;
+        if (vote.winner) {
+          if (!(right instanceof HTMLButtonElement)) {
+            const res = document.createElement('span');
+            res.className = 'vote-option-result';
+            row.appendChild(res);
+          }
+          const res = row.lastElementChild;
+          res.textContent = vote.winner === o.id ? `winner — ${o.votes} vote${o.votes === 1 ? '' : 's'}` : `${o.votes} vote${o.votes === 1 ? '' : 's'}`;
+        } else if (right instanceof HTMLButtonElement) {
+          right.textContent = myVote === o.id ? 'Voted ✓' : 'Vote';
+        }
+      }
+    },
+
+    /** Wire the Vote buttons: (trackId) => void (main.js sends the WS vote). */
+    setVoteHandler(fn) {
+      this._voteHandler = fn;
+    },
+
+    hideVotePanel() {
+      overlayVote.classList.add('hidden');
+    },
+
     /** Pending queue (MCPG-34): agents waiting for the next race. */
     setPending(list) {
       pendingPanel.classList.toggle('hidden', !list || list.length === 0);
@@ -261,6 +326,8 @@ export function createUi() {
     reset() {
       overlayStart.classList.add('hidden');
       overlayFinished.classList.add('hidden');
+      overlayVote.classList.add('hidden');
+      voteOptions.textContent = '';
       banner.classList.add('hidden');
       labels.textContent = '';
       labelEls.clear();

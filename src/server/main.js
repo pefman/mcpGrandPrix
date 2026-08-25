@@ -11,10 +11,12 @@
  * Env overrides: PORT, LAPS, WINDOW_SECONDS, REACTIVE_WINDOW_SECONDS
  * (defaults to WINDOW_SECONDS), TICK_DELAY_MS, SEED, LOG_FILE, MIN_AGENTS
  * (cars required to leave setup; default 4 — use 1 for solo demo),
- * MCGP_TRACK (track id from the `tracks/` registry; default `coastal-palm`),
- * RESULTS_HOLD_SECONDS (hold the results screen before opening the next
- * session; default 60), PENDING_GRACE_SECONDS (claim window per queued seat;
- * default 30).
+ * MCGP_TRACK (track id from the `tracks/` registry; default `coastal-palm`;
+ * seeds the FIRST race only — afterwards the post-race spectator vote
+ * decides, MCPG-28), RESULTS_HOLD_SECONDS (hold the results screen before
+ * opening the next session; default 60), PENDING_GRACE_SECONDS (claim window
+ * per queued seat; default 30), VOTE_WINDOW_SECONDS (post-race track-voting
+ * window; default 30, 0 disables).
  * Prints one JSON object per line on stdout: server_ready, every logged
  * race event/decision, and race_complete with final standings (per race).
  *
@@ -28,7 +30,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMcpHttpServer } from './http.js';
 import { createSpectatorHub, SPECTATE_PATH } from './spectator.js';
-import { createTrackFromEnv } from '../tracks.js';
+import { createTrackFromEnv, NEXT_TRACK_FILE } from '../tracks.js';
 import { RaceOrchestrator } from './raceOrchestrator.js';
 
 const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client');
@@ -45,11 +47,15 @@ const [
 ] = process.argv;
 
 // MCGP-27: the active track comes from the `tracks/` registry (MCGP_TRACK).
-// Unknown ids throw here — fail fast, before any client connects.
+// Unknown ids throw here — fail fast, before any client connects. From the
+// second race on the post-race vote decides the track instead (MCPG-28).
 const track = createTrackFromEnv();
 
 let spectatorHub = null;
 const orchestrator = new RaceOrchestrator({
+  // MCPG-28: the vote winner is persisted on the log volume so a container
+  // restart between races cannot lose the decision.
+  nextTrackFile: NEXT_TRACK_FILE,
   totalLaps: Number(lapsArg),
   strategyWindowSeconds: Number(windowArg),
   // Own default (10 s, in the 8-15 s spec band) — deliberately NOT derived
@@ -63,23 +69,16 @@ const orchestrator = new RaceOrchestrator({
   logToStdout: true,
   onSession: () => spectatorHub?.reset(),
   onRaceComplete: (session, raceSeq) => {
-    // Send the final snapshot to every spectator synchronously, BEFORE
-    // printing race_complete: runRace.js SIGTERMs the server the moment it
-    // sees that line, so anything scheduled after it may never run.
+    // MCPG-28: the voting window opens right away; the hub notices the
+    // phase change and broadcasts the voting state + snapshots itself.
     spectatorHub.finalize();
-    console.log(
-      JSON.stringify({
-        type: 'race_complete',
-        raceSeq,
-        raceId: session.raceId,
-        standings: session.standings(),
-      }),
-    );
   },
+  onVoteEnd: (result) => spectatorHub?.finalizeVote(result),
 });
 
 const server = createMcpHttpServer(orchestrator, { staticDir: clientDir });
-spectatorHub = createSpectatorHub(server, orchestrator, {
+spectatorHub = createSpectatorHub(server, orchestrator.session, {
+  getSession: () => orchestrator.session, // rebind across session rotations (MCPG-34)
   onEvent: (event) => orchestrator.logger.log(event), // spectator traffic in the decision log
 });
 

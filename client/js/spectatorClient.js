@@ -140,6 +140,17 @@ export class SpectatorConnection extends EventTarget {
   }
 
   /**
+   * Send an outbound message (keep-alive pings, MCPG-28 votes). Silently
+   * drops when the socket is not open — the server is authoritative and
+   * snapshot/vote_result events drive the UI either way.
+   */
+  send(msg) {
+    if (this.connected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+
+  /**
    * Fallback state fetch: GET /state on the same host as the WebSocket.
    * Returns the state object, or null when the server is unreachable (or
    * does not offer the endpoint — old servers).

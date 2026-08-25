@@ -10,6 +10,9 @@
  *   PENDING_GRACE_SECONDS — how long a queued agent has to claim its seat in
  *                the next session before its queue entry expires (default 30).
  *                (MCPG-34)
+ *   VOTE_WINDOW_SECONDS — post-race spectator track-voting window (default
+ *                30). The winner becomes the next race's track; persisted in
+ *                the log volume so a restart cannot lose it. (MCPG-28)
  */
 function envInt(name, fallback) {
   const raw = process.env[name];
@@ -41,6 +44,11 @@ export const CONFIG = {
     // If the name is still queued when that session's grace clock expires, the
     // entry is dropped (the queue is FIFO order, not a reservation).
     pendingGraceSeconds: envInt('PENDING_GRACE_SECONDS', 30),
+    // Post-race spectator track voting (MCPG-28): after the last car finishes,
+    // the spectator window shows a VOTE overlay for this long and the winner
+    // becomes the next race's track (persisted; 0 disables the window and
+    // falls back to deterministic rotation).
+    voteWindowSeconds: envInt('VOTE_WINDOW_SECONDS', 30),
   },
 
   reactive: {

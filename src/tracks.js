@@ -18,6 +18,11 @@ import { Track } from './track.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const TRACKS_DIR = path.resolve(here, '..', 'tracks');
 export const DEFAULT_TRACK_ID = 'coastal-palm';
+// Where the post-race vote (MCPG-28) persists its winner. Lives on the
+// LOG_FILE volume so it survives container restarts (Dockerfile + compose
+// mount ./log at /logs; the VPS deploy does the same).
+export const NEXT_TRACK_FILE =
+  process.env.MCGP_NEXT_TRACK_FILE || '/logs/next_track.json';
 
 function validateDef(def, file) {
   const err = (msg) => new Error(`tracks/${file}: ${msg}`);
@@ -70,6 +75,38 @@ export function getTrackDef(id) {
  * Build the server-side `Track` for the active environment.
  * `MCGP_TRACK` selects the track id; falls back to `coastal-palm`.
  */
+/**
+ * Persist the next-race track decision (MCPG-28): the winner of the
+ * post-race spectator vote, or the deterministic fallback rotation when no
+ * votes came in. `source` is 'vote' or 'fallback'. Written atomically (tmp
+ * file + rename) so a crash mid-write cannot corrupt the file.
+ */
+export function persistNextTrack({ trackId, source, votes, file = NEXT_TRACK_FILE } = {}) {
+  const payload = {
+    trackId,
+    source,
+    votes: votes ?? {},
+    raceId: null, // caller fills in
+    decidedAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n');
+  fs.renameSync(tmp, file);
+  return payload;
+}
+
+/** Read the persisted decision; null when missing/corrupt (first boot). */
+export function readNextTrack(file = NEXT_TRACK_FILE) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!raw || typeof raw.trackId !== 'string' || !getTrackDef(raw.trackId)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
 export function createTrackFromEnv(env = process.env) {
   const wanted = (env.MCGP_TRACK || DEFAULT_TRACK_ID).trim();
   const def = getTrackDef(wanted);
