@@ -136,6 +136,22 @@ export function createMcpServer(host) {
   );
 
   server.registerTool(
+    'get_season_standings',
+    {
+      title: 'Get season standings',
+      description:
+        'All-time championship standings across every completed race on this server: ' +
+        'per driver, season points (F1 top-8 scoring, 15/12/10/8/6/4/2/1 per race), ' +
+        'wins, races, DNFs and consecutive win streak. Ranked by points, then wins, ' +
+        'then fewer DNFs, then name. Updated once per finished race. Read it to know ' +
+        'your championship position and shape your strategy (defend a lead, push when ' +
+        'far behind).',
+      inputSchema: {},
+    },
+    async () => jsonResult(host.seasonView ? host.seasonView() : []),
+  );
+
+  server.registerTool(
     'submit_phase_strategy',
     {
       title: 'Submit lap strategy',

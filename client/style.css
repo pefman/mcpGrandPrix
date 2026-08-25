@@ -169,6 +169,8 @@ html, body {
 .lb-swatch { width: 9px; height: 9px; border-radius: 0; flex: none; }
 .lb-laps { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .lb-gap { text-align: right; font-variant-numeric: tabular-nums; }
+/* MCPG-49: season-leader chip on the live leaderboard */
+.lb-crown { color: var(--amber); font-size: 11px; flex: none; }
 .lb-row.finished .lb-name { color: var(--muted); }
 .lb-status { font-size: 10px; color: var(--amber); margin-left: 4px; }
 .tire-bar { height: 3px; border-radius: 0; background: rgba(255,255,255,0.12); margin-top: 3px; overflow: hidden; }
@@ -303,8 +305,12 @@ html, body {
   color: var(--muted);
 }
 #final-standings { margin-top: 10px; font-size: 14px; }
-.final-row { display: grid; grid-template-columns: 34px 1fr 90px; gap: 8px; padding: 4px 0; text-align: left; }
+.final-row { display: grid; grid-template-columns: 34px 1fr 90px 70px; gap: 8px; padding: 4px 0; text-align: left; }
 .final-row .f-gap { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* MCPG-49: season column on the results screen */
+.final-row .f-season { text-align: right; color: var(--amber); font-variant-numeric: tabular-nums; }
+.final-name { display: flex; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; }
+.final-head { color: var(--muted); font-size: 10px; letter-spacing: 0.1em; padding-bottom: 6px; }
 
 /* ---------- car labels ---------- */
 #labels { position: fixed; inset: 0; z-index: 5; pointer-events: none; }

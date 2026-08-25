@@ -2,9 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createMcpHttpServer } from '../src/server/http.js';
 import { createSpectatorHub } from '../src/server/spectator.js';
 import { RaceOrchestrator } from '../src/server/raceOrchestrator.js';
+import { SEASON_POINTS } from '../src/season.js';
 import { runAgent } from '../agents/agentBase.js';
 import { SCRIPTED_AGENTS } from '../src/sim/strategies.js';
 import { createRng } from '../src/rng.js';
@@ -49,12 +52,14 @@ const RACE2_AGENTS = [
   { profile: 'pitHeavy', name: 'R2D', seed: 207 },
 ];
 
+let tmpDir;
 let orchestrator;
 let server;
 let hub;
 let baseUrl;
 let wsUrl;
 let logFile;
+let seasonFile;
 let session1;
 let session2;
 let spec = null; // raw WS spectator: { ws, messages }
@@ -89,8 +94,9 @@ function startAgent(a) {
 }
 
 beforeAll(async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpgp-persist-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpgp-persist-'));
   logFile = path.join(tmpDir, 'persistence.jsonl');
+  seasonFile = path.join(tmpDir, 'season.json'); // MCPG-49
 
   orchestrator = new RaceOrchestrator({
     totalLaps: TOTAL_LAPS,
@@ -102,6 +108,7 @@ beforeAll(async () => {
     pendingGraceSeconds: GRACE_S,
     voteWindowSeconds: 0, // voting is MCPG-28; this test covers persistence only
     logFile,
+    seasonFile, // MCPG-49: championship season persists in the temp dir
     logToStdout: false,
   });
 
@@ -177,6 +184,99 @@ afterAll(async () => {
 function logLines() {
   return fs.readFileSync(logFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 }
+
+/**
+ * MCPG-49 e2e: two back-to-back finished sessions accumulate championship
+ * season points — awarded once per finished race from the final standings,
+ * persisted to the season file, logged, and visible via the read-only
+ * `get_season_standings` MCP tool and the spectator snapshot's `season`
+ * field (no new WS message type).
+ */
+describe('championship season accumulates across back-to-back races (MCPG-49)', () => {
+  // Expected totals recomputed from the two finished sessions' standings.
+  const expectedTotals = () => {
+    const totals = {};
+    for (const session of [session1, session2]) {
+      for (const e of session.standings()) {
+        const t = (totals[e.name] ??= { points: 0, wins: 0, races: 0, dnf: 0 });
+        t.races += 1;
+        if (e.status === 'FINISHED') {
+          if (e.position <= SEASON_POINTS.length) t.points += SEASON_POINTS[e.position - 1];
+          if (e.position === 1) t.wins += 1;
+        } else if (e.status === 'RETIRED') {
+          t.dnf += 1;
+        }
+      }
+    }
+    return totals;
+  };
+
+  it('awards F1 top-8 points once per finished race and accumulates', () => {
+    const view = orchestrator.seasonView();
+    const totals = expectedTotals();
+    // All eight starters across the two races (no overlap), one race each.
+    expect(view).toHaveLength(8);
+    expect(Object.keys(totals)).toHaveLength(8);
+    for (const row of view) {
+      expect(totals[row.name], `season has ${row.name}`).toBeTruthy();
+      expect(row.points).toBe(totals[row.name].points);
+      expect(row.races).toBe(1);
+      expect(row.wins).toBe(totals[row.name].wins);
+      expect(row.dnf).toBe(totals[row.name].dnf);
+    }
+    // Ranked by points desc (tiebreaks covered by unit tests).
+    for (let i = 1; i < view.length; i++) {
+      expect(view[i - 1].points).toBeGreaterThanOrEqual(view[i].points);
+    }
+    expect(view[0].points).toBe(Math.max(...Object.values(totals).map((t) => t.points)));
+    // A season leader exists (the race-1 winner at least).
+    expect(view[0].wins).toBeGreaterThanOrEqual(1);
+  });
+
+  it('logs season_points_awarded once per finished race with per-car awards', () => {
+    const awarded = logLines().filter((l) => l.type === 'season_points_awarded');
+    expect(awarded).toHaveLength(2); // exactly one per finished session, none for the open session 3
+    expect(awarded[0].raceSeq).toBe(1);
+    expect(awarded[1].raceSeq).toBe(2);
+
+    const r2 = awarded[1].awards;
+    expect(r2.map((a) => a.name).sort()).toEqual(['Late', 'R2B', 'R2C', 'R2D']);
+    for (const a of r2) {
+      const e = session2.standings().find((x) => x.name === a.name);
+      const want = e.status === 'FINISHED' && e.position <= SEASON_POINTS.length ? SEASON_POINTS[e.position - 1] : 0;
+      expect(a.pointsEarned).toBe(want);
+    }
+  });
+
+  it('persists the season file and a fresh server loads it at startup', () => {
+    const onDisk = JSON.parse(fs.readFileSync(seasonFile, 'utf8'));
+    expect(onDisk.version).toBe(1);
+    expect(onDisk.drivers).toEqual(orchestrator.season.drivers);
+    // A fresh orchestrator on the same file resumes the exact same season.
+    const fresh = new RaceOrchestrator({ seed: 42, logToStdout: false, seasonFile });
+    expect(fresh.season).toEqual(orchestrator.season);
+  });
+
+  it('serves the season via MCP get_season_standings (read-only, idempotent)', async () => {
+    const client = new Client({ name: 'season-tool-test', version: '0.1.0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(baseUrl)));
+    const first = await client.callTool({ name: 'get_season_standings', arguments: {} });
+    const second = await client.callTool({ name: 'get_season_standings', arguments: {} });
+    await client.close();
+    expect(JSON.parse(first.content[0].text)).toEqual(orchestrator.seasonView());
+    expect(second).toEqual(first); // same answer twice, no state change
+  });
+
+  it('broadcasts the season inside the existing snapshot (no new WS message type)', () => {
+    const snaps = spec.messages.filter((m) => m.type === 'snapshot');
+    // Fresh season: the early snapshots carry an empty ranking.
+    expect(snaps.filter((s) => Array.isArray(s.season) && s.season.length === 0).length).toBeGreaterThan(0);
+    // Settled: the last finished snapshot carries the final totals.
+    const finished = snaps.filter((s) => s.phase === 'finished');
+    expect(finished.length).toBeGreaterThan(0);
+    expect(finished[finished.length - 1].season).toEqual(orchestrator.seasonView());
+  });
+});
 
 describe('persistent server with a FIFO pending queue (MCPG-34)', () => {
   it('keeps the same server and spectators alive across two full races', () => {

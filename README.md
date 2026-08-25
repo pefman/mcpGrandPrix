@@ -156,6 +156,7 @@ the same spectator build standalone on port 8080 (split-deploy demo).
 | `RESULTS_HOLD_SECONDS` | `60` | how long the finished result is held before the next race session opens (persistent server). |
 | `PENDING_GRACE_SECONDS` | `30` | a queued agent must re-`join_race` within this window after the next session opens, or its reserved seat is dropped from the FIFO pending queue. |
 | `VOTE_WINDOW_SECONDS` | `30` | post-race spectator track-voting window (s). Set to `0` to disable voting entirely (track rotation falls back to deterministic seeding). |
+| `MCGP_SEASON_FILE` | `/logs/season.json` | championship season persistence file (log volume, same mount as `next_track.json`). Delete it + restart to reset the season. |
 
 For bare local runs, the CLI args to `node src/server/main.js`
 (port, laps, window s, tick delay ms, seed, log file) override the env vars.
@@ -224,11 +225,38 @@ field, never transport-level failures.
 | `get_race_state` | Full snapshot: phase, lap, window time left, all cars, standings. | Pure read. |
 | `get_car_state` | Snapshot of one car plus its standing. | Pure read. |
 | `get_standings` | Position, name, status, laps, gap to leader. | Pure read. |
+| `get_season_standings` | All-time championship standings across every completed race: season points (F1 top-8 scoring 15/12/10/8/6/4/2/1 per race), wins, races, DNFs, win streak. Ranked by points, then wins, then fewer DNFs, then name. Updated once per finished race. | Pure read. |
 | `submit_phase_strategy` | Strategy packet for the current window: `pace`, `tireManagement` (`push\|normal\|manage`), `aggression`, `defend` (`0\|1`), `pitNow` (`bool`). Omitted fields default. | First valid packet per window wins; repeats rejected as `duplicate_strategy`, never change state. |
 | `submit_reactive_action` | React to an open reactive window (`attack`/`defend`/`hold`/`pit_now`). See `get_race_state().reactiveWindow` for trigger, `carIds`, and `allowedByCar`. | First valid action per `(carId, windowId)` wins; duplicates → `duplicate_action`; wrong car / no window → error, no state change. |
 
 Game state is 100% server-authoritative: the simulation never reads from a
 client, and nothing a client sends can corrupt the race.
+
+## Championship season (MCPG-49)
+
+A persistent F1-style championship accumulates across every completed race
+session on the server. Finishing P1–P8 awards **15/12/10/8/6/4/2/1** points
+(P9+ and DNF score 0); points are computed once per finished race from its
+final standings — no simulation changes, determinism untouched. A win also
+feeds the per-driver `wins` / `streak` (consecutive wins) counters.
+
+- **Agents** read their position with the read-only `get_season_standings`
+  tool (also in every snapshot's `season` field, for the host).
+- **Spectators** see the season total on the results screen (SEASON column)
+  and a ♛ crown on the live leaderboard for the season leader.
+- **Tiebreak**: points, then wins, then fewer DNFs, then name.
+- **Persistence**: one JSON file on the log volume — `/logs/season.json`
+  (override with `MCGP_SEASON_FILE`) — written atomically after each race and
+  loaded at startup, the same pattern as the post-race track decision. A
+  corrupt file starts a fresh empty season with a logged warning; it never
+  crashes the server. If the file cannot be written (e.g. a bare local run
+  without a `/logs` volume), the award stays in memory, a
+  `season_save_failed` entry is logged, and the write is retried on the next
+  race — the rotation loop keeps running.
+- **Reset** (manual, no admin UI): stop the server, delete the season file
+  (e.g. `docker compose exec server rm /logs/season.json`), start it again.
+- Every award is logged as `season_points_awarded` in the decision log with
+  per-car `pointsEarned`.
 
 ## Connect your own agent
 
@@ -288,7 +316,7 @@ Slice 3; there is no `vercel.json` yet.)
 | Frame | Direction | Meaning |
 | --- | --- | --- |
 | `hello` | server → client | once on connect: protocol version, track, lap count, current phase. |
-| `snapshot` | server → client | every 100 ms: a **self-contained** full state — phase, lap, window time, race clock, all cars (track distance `s`, status, tires, fuel, strategy), standings, spectator count. Because snapshots are complete, a reconnecting client just waits for the next one; no replay. |
+| `snapshot` | server → client | every 100 ms: a **self-contained** full state — phase, lap, window time, race clock, all cars (track distance `s`, status, tires, fuel, strategy), standings, season standings (MCPG-49), spectator count. Because snapshots are complete, a reconnecting client just waits for the next one; no replay. |
 | `ping` | client → server | keep-alive, ~every 30 s while the tab is open and the race is running. |
 | `pong` | server → client | reply to `ping` (inbound traffic keeps free-tier hosts awake mid-race). |
 
@@ -338,6 +366,8 @@ src/
   config.js              all tunables in one place
   rng.js                 seeded mulberry32 RNG (deterministic races)
   track.js               track definition (1 km, 5 sectors)
+  season.js              championship season points (MCPG-49): F1 top-8
+                         scoring, persistence, ranking — pure + file I/O
   sim/simulation.js      the authoritative race engine (pure, deterministic)
   sim/car.js             car model
   sim/strategies.js      the four scripted agent profiles (pure functions)

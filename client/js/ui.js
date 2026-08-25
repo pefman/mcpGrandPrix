@@ -86,7 +86,7 @@ export function createUi() {
       row.className = 'lb-row';
       row.innerHTML = `
         <span class="lb-pos"></span>
-        <span class="lb-name"><span class="lb-swatch" style="background:${color}"></span><span class="lb-nm"></span><span class="lb-status"></span></span>
+        <span class="lb-name"><span class="lb-swatch" style="background:${color}"></span><span class="lb-nm"></span><span class="lb-crown"></span><span class="lb-status"></span></span>
         <span class="lb-laps"></span>
         <span class="lb-gap"></span>
         <div class="tire-bar"><div class="tire-fill"></div></div>`;
@@ -167,6 +167,10 @@ export function createUi() {
     setLeaderboard(snapshot) {
       // rebuild row order from standings; keep per-car row elements
       const byId = new Map(snapshot.cars.map((c) => [c.id, c]));
+      // MCPG-49: crown on the season leader (the ranked `season` field in
+      // the snapshot; null/empty for bare sessions or a fresh season).
+      const seasonLeader =
+        Array.isArray(snapshot.season) && snapshot.season.length > 0 ? snapshot.season[0].name : null;
       const seen = new Set();
       for (const entry of snapshot.standings) {
         const car = byId.get(entry.carId);
@@ -176,6 +180,7 @@ export function createUi() {
         row.classList.toggle('finished', car.status === 'FINISHED');
         row.querySelector('.lb-pos').textContent = entry.position;
         row.querySelector('.lb-nm').textContent = car.name;
+        row.querySelector('.lb-crown').textContent = car.name === seasonLeader ? '♛' : '';
         row.querySelector('.lb-status').textContent =
           car.status === 'PITTING' ? 'PIT' : car.status === 'RETIRED' ? 'DNF' : car.status === 'FINISHED' ? 'FIN' : '';
         row.querySelector('.lb-laps').textContent = `${car.completedLaps}/${snapshot.totalLaps}`;
@@ -227,9 +232,16 @@ export function createUi() {
       overlayStart.classList.add('hidden');
     },
 
-    showFinishedOverlay(standings, carNameById) {
+    showFinishedOverlay(standings, carNameById, season) {
       overlayFinished.classList.remove('hidden');
       finalStandings.textContent = '';
+      // MCPG-49: season totals per driver (already include this race's
+      // points — the server settles before the results overlay is shown).
+      const seasonByName = new Map((season ?? []).map((s) => [s.name, s]));
+      const head = document.createElement('div');
+      head.className = 'final-row final-head';
+      head.innerHTML = `<span class="lb-pos">POS</span><span class="lb-name">DRIVER</span><span class="f-gap">GAP</span><span class="f-season">SEASON</span>`;
+      finalStandings.appendChild(head);
       for (const entry of standings) {
         const row = document.createElement('div');
         row.className = 'final-row';
@@ -244,7 +256,8 @@ export function createUi() {
             : entry.finishTimeS != null && standings[0].finishTimeS != null
               ? `+${(entry.finishTimeS - standings[0].finishTimeS).toFixed(1)}s`
               : '';
-        row.innerHTML = `<span class="lb-pos">${entry.position}.</span><i class="sw-dot" style="background:${color}"></i><span class="lb-nm">${name}</span><span class="f-gap">${gap}</span>`;
+        const seasonPts = seasonByName.has(name) ? seasonByName.get(name).points : '—';
+        row.innerHTML = `<span class="lb-pos">${entry.position}.</span><span class="final-name"><i class="sw-dot" style="background:${color}"></i><span class="lb-nm">${name}</span></span><span class="f-gap">${gap}</span><span class="f-season">${seasonPts}</span>`;
         finalStandings.appendChild(row);
       }
     },

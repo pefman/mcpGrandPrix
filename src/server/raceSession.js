@@ -92,9 +92,15 @@ export class RaceSession {
   get stateView() {
     if (this.votingInfo) {
       const remainingS = Math.max(0, (this._orchestrator?._voteDeadline ?? 0) - Date.now()) / 1000;
-      return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [], phase: 'voting', vote: this._orchestrator?.voteView(remainingS) };
+      return {
+        ...this.sim.state(),
+        pending: this._orchestrator?.pendingView() ?? [],
+        phase: 'voting',
+        vote: this._orchestrator?.voteView(remainingS),
+        season: this._orchestrator?.seasonView() ?? null, // MCPG-49
+      };
     }
-    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [] };
+    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [], season: this._orchestrator?.seasonView() ?? null };
   }
 
   castVote(sessionId, trackId) {
@@ -124,7 +130,9 @@ export class RaceSession {
   }
 
   state() {
-    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [] };
+    // `season` (MCPG-49): the ranked all-time championship standings, or
+    // null for bare sessions (no orchestrator / no persistence).
+    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [], season: this._orchestrator?.seasonView() ?? null };
   }
 
   carView(carId) {
