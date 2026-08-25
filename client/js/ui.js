@@ -22,6 +22,14 @@ function fmtClock(s) {
   return `${String(m).padStart(2, '0')}:${sec.toFixed(1).padStart(4, '0')}`;
 }
 
+/** Lap/sector time: m:ss.t above a minute, ss.t below (F1 style, MCPG-31). */
+function fmtLap(s) {
+  if (s == null) return '—';
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return m > 0 ? `${m}:${sec.toFixed(1).padStart(4, '0')}` : sec.toFixed(1).padStart(4, '0');
+}
+
 export function createUi() {
   const phaseChip = $('phase-chip');
   const trackLine = $('track-line');
@@ -88,6 +96,8 @@ export function createUi() {
         <span class="lb-pos"></span>
         <span class="lb-name"><span class="lb-swatch" style="background:${color}"></span><span class="lb-nm"></span><span class="lb-status"></span></span>
         <span class="lb-laps"></span>
+        <span class="lb-last"></span>
+        <span class="lb-spl"></span>
         <span class="lb-gap"></span>
         <div class="tire-bar"><div class="tire-fill"></div></div>`;
       lbRows.appendChild(row);
@@ -179,6 +189,32 @@ export function createUi() {
         row.querySelector('.lb-status').textContent =
           car.status === 'PITTING' ? 'PIT' : car.status === 'RETIRED' ? 'DNF' : car.status === 'FINISHED' ? 'FIN' : '';
         row.querySelector('.lb-laps').textContent = `${car.completedLaps}/${snapshot.totalLaps}`;
+        // LAST: last completed lap (server-authoritative, MCPG-31). Frozen
+        // for retired/finished cars — their final lap is the honest value.
+        row.querySelector('.lb-last').textContent = fmtLap(car.lastLapTimeS);
+        // SPL: the most recently COMPLETED sector of the current lap.
+        // In sector k, sectors 1..k-1 are done -> index k-2 (0-based).
+        // Green when that split is the car's personal best for the sector.
+        const splEl = row.querySelector('.lb-spl');
+        const secs = car.currentSectorTimesS ?? [];
+        const best = car.bestSectorTimesS ?? [];
+        if (car.currentSector > 1) {
+          const idx = car.currentSector - 2;
+          const t = secs[idx];
+          if (t != null) {
+            splEl.textContent = `S${idx + 1} ${fmtLap(t)}`;
+            splEl.classList.toggle(
+              'best',
+              best[idx] != null && Math.abs(t - best[idx]) < 0.005,
+            );
+          } else {
+            splEl.textContent = '—';
+            splEl.classList.remove('best');
+          }
+        } else {
+          splEl.textContent = 'S1'; // no split yet this lap
+          splEl.classList.remove('best');
+        }
         const gap = entry.gapToLeaderM;
         row.querySelector('.lb-gap').textContent =
           entry.position === 1 ? 'leader' : gap == null ? '—' : `+${gap.toFixed(1)}m`;

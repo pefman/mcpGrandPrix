@@ -399,6 +399,37 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     });
   }
 
+  // ---- minimap geometry (MCPG-31): the 2D HUD canvas draws the circuit
+  // from the SAME curve as the 3D road, so the two views can't diverge.
+  // Sampled once (the curve never changes); the canvas does the fitting.
+  const MAP_SAMPLES = 256;
+  const mapPoints = [];
+  let mapMinX = Infinity;
+  let mapMaxX = -Infinity;
+  let mapMinZ = Infinity;
+  let mapMaxZ = -Infinity;
+  for (let i = 0; i < MAP_SAMPLES; i++) {
+    const p = curve.getPointAt(i / MAP_SAMPLES);
+    mapPoints.push({ x: p.x, z: p.z });
+    if (p.x < mapMinX) mapMinX = p.x;
+    if (p.x > mapMaxX) mapMaxX = p.x;
+    if (p.z < mapMinZ) mapMinZ = p.z;
+    if (p.z > mapMaxZ) mapMaxZ = p.z;
+  }
+  const sectorS = [];
+  if (trackInfo.sectorCount > 1) {
+    const sectorLen = trackInfo.sectorLengthM ?? lengthM / trackInfo.sectorCount;
+    for (let k = 1; k < trackInfo.sectorCount; k++) sectorS.push(k * sectorLen);
+  }
+  const map = {
+    points: mapPoints,
+    pitPoints: pitBoxes.map((b) => ({ x: b.pos.x, z: b.pos.z })),
+    min: { x: mapMinX, z: mapMinZ },
+    max: { x: mapMaxX, z: mapMaxZ },
+    sectorS,
+    lengthM,
+  };
+
   return {
     group,
     pointAt,
@@ -412,6 +443,8 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     groundSize,
     groundCenter: trackCenter,
     size: gsize,
+    // minimap source data (MCPG-31)
+    map,
     dispose,
   };
 }

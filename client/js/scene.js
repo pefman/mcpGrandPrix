@@ -297,6 +297,12 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     carIds: () => [...cars.keys()],
     addCar,
     setCar,
+    /** World (x,z) of a car's current visual spot (pit box while PITTING) — the minimap (MCPG-31). */
+    carWorldPos(carId) {
+      const car = cars.get(carId);
+      if (!car) return null;
+      return { x: car.group.position.x, z: car.group.position.z };
+    },
     /** Project a car's world position to screen px (CSS space) for its DOM label. */
     labelScreenPos(carId) {
       const car = cars.get(carId);
