@@ -26,29 +26,50 @@ const ELEVATION = THREE.MathUtils.degToRad(35);
 const FIT_MARGIN = 1.05;
 const SHADOWS_ENABLED = true; // kill-switch; tune/decide in Step 5 (MCPG-47)
 const SHADOW_MAP_SIZE = 2048;
+const PIT_TWEEN_MS = 900; // pit lane drive-in/out, client-side only (MCPG-45)
 
-/** One car mesh: a stylized box car, nose pointing local +Z. */
-function makeCarMesh(color) {
-  const group = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(2.2, 1.1, 5.4),
-    new THREE.MeshLambertMaterial({ color }),
-  );
-  body.position.y = 0.8;
-  const cabin = new THREE.Mesh(
-    new THREE.BoxGeometry(1.5, 0.7, 2.2),
-    new THREE.MeshLambertMaterial({ color: 0x11141a }),
-  );
-  cabin.position.set(0, 1.7, -0.5);
-  const nose = new THREE.Mesh(
-    new THREE.BoxGeometry(1.0, 0.4, 0.8),
-    new THREE.MeshLambertMaterial({ color: 0x11141a }),
-  );
-  nose.position.set(0, 0.9, 2.9);
-  group.add(body, cabin, nose);
-  group.scale.setScalar(1.9); // track is 1000 m — 2 m cars would be sub-pixel
-  group.userData.color = color;
-  return group;
+/**
+ * Voxel F1 car (Step 3, MCPG-45): a box stack with a strong F1 silhouette,
+ * nose pointing local +Z (setCar orients via lookAt):
+ *
+ *   body + front splitter + rear wing  → livery parts (userData.livery)
+ *   glass cockpit                      → light glass
+ *   4 wide wheels + 2 wing pylons      → dark
+ *
+ * Livery parts are painted ONCE here / in addCar; setCar only repaints when
+ * a car retires (never per frame — the old per-frame traverse is gone).
+ */
+const GLASS_COLOR = 0x9fc7dd; // light cockpit glass
+const DARK_COLOR = 0x14171d;  // wheels
+const PYLON_COLOR = 0x1a1e26; // wing pylons
+
+export function makeCarMesh(color) {
+  const g = new THREE.Group();
+  const add = (w, h, d, c, x, y, z, livery) => {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, d),
+      new THREE.MeshLambertMaterial({ color: c }),
+    );
+    m.position.set(x, y, z);
+    if (livery) m.userData.livery = true;
+    g.add(m);
+    return m;
+  };
+  // body (livery): long, low slab
+  add(2.0, 0.85, 4.6, color, 0, 0.85, -0.1, true);
+  // glass cockpit, just behind mid
+  add(1.1, 0.55, 1.5, GLASS_COLOR, 0, 1.5, 0.15);
+  // front splitter (livery) — the nose, local +Z
+  add(1.3, 0.35, 1.1, color, 0, 0.6, 2.55, true);
+  // rear wing (livery) + pylons — the tail, local -Z
+  add(2.5, 0.3, 0.75, color, 0, 1.8, -2.55, true);
+  add(0.28, 0.9, 0.3, PYLON_COLOR, -0.62, 1.2, -2.5);
+  add(0.28, 0.9, 0.3, PYLON_COLOR, 0.62, 1.2, -2.5);
+  // 4 wide wheels: F1 stance, wider than the body
+  for (const x of [-1.12, 1.12]) for (const z of [-1.75, 1.75]) add(0.95, 1.05, 1.35, DARK_COLOR, x, 0.525, z);
+  g.scale.setScalar(1.9); // track is 1000 m — 2 m cars would be sub-pixel
+  g.userData.color = color;
+  return g;
 }
 
 /**
@@ -142,7 +163,10 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   camera.near = 10;
   camera.far = distance + size.length() * 1.5 + 1000;
 
-  const cars = new Map(); // carId -> { group, color, state, name }
+  const cars = new Map(); // carId -> { group, color, liveryParts, state, name, ... }
+  const _lerp = new THREE.Vector3(); // scratch for the pit-transition tween
+  const _dir = new THREE.Vector3();
+  const DIM = new THREE.Color(0x3a3f48); // retired cars fade to this
 
   // ---- race FX (Step 4, MCPG-46): one shared effect system (client/js/fx.js)
   const fx = createFx(scene);
@@ -223,11 +247,40 @@ export function createSpectatorScene(canvas, trackInfo, def) {
         ? serverColor
         : CAR_COLORS[slotIndex % CAR_COLORS.length];
     const group = makeCarMesh(color);
-    if (SHADOWS_ENABLED) group.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    const liveryParts = [];
+    group.traverse((o) => {
+      if (!o.isMesh) return;
+      if (SHADOWS_ENABLED) o.castShadow = true;
+      if (o.userData.livery) liveryParts.push(o);
+    });
     scene.add(group);
-    cars.set(carId, { group, color, state: 'RUNNING', name });
+    cars.set(carId, {
+      group, color, liveryParts,
+      liveryColor: new THREE.Color(color),
+      state: 'RUNNING', name,
+      placed: false,  // first sighting: snap, don't tween (late spectators)
+      pitting: false,
+      dimmed: false,
+      tween: null,
+    });
     return color;
   }
+
+  /** Pit box for this car (pit boxes are assigned in join/grid order). */
+  function pitBoxOf(carId) {
+    const slot = Math.max(0, [...cars.keys()].indexOf(carId));
+    return track.pitBoxes[Math.min(slot, track.pitBoxes.length - 1)];
+  }
+
+  function paintLivery(car) {
+    const c = car.dimmed ? DIM : car.liveryColor;
+    for (const part of car.liveryParts) part.material.color.copy(c);
+  }
+
+  const smooth01 = (t) => {
+    t = Math.min(1, Math.max(0, t));
+    return t * t * (3 - 2 * t);
+  };
 
   function setCar(carId, s, state, snapshot = null) {
     const car = cars.get(carId);
@@ -236,8 +289,12 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     const group = car.group;
 
     // pit-stop FX: the snapshot's pitTimeLeftS only counts down while the
-    // car actually pits, so the first PITTING frame fires once per stop
-    if (state === 'PITTING' && snapshot && snapshot.cars) {
+    // car actually pits, so the first PITTING frame fires once per stop.
+    // (Fires at the car's on-track position: this frame is where the tween
+    // starts, i.e. where the car entered the pit lane.)
+    const pitting = state === 'PITTING';
+    const now = performance.now();
+    if (pitting && snapshot && snapshot.cars) {
       const snapCar = snapshot.cars.find((c) => c.id === carId);
       const t = snapCar?.pitTimeLeftS;
       if (car.pitFxArmed !== true && t != null && t > 0) {
@@ -247,12 +304,31 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     } else if (state !== 'PITTING') {
       car.pitFxArmed = false;
     }
+    // pit transition (MCPG-45): the sim holds the car stationary at its
+    // entry point while PITTING; the drive to/from the pit lane is pure
+    // client-side dressing — a short eased tween instead of a teleport
+    if (car.placed && pitting !== car.pitting) {
+      car.tween = {
+        from: group.position.clone(),
+        to: pitting ? pitBoxOf(carId).pos : track.pointAt(s),
+        t0: now,
+        dur: PIT_TWEEN_MS,
+      };
+    }
+    car.placed = true;
+    car.pitting = pitting;
+
     let pos;
-    let heading;
-    if (state === 'PITTING') {
-      // parked in its pit box (pit boxes are assigned in join/grid order)
-      const slot = Math.max(0, [...cars.keys()].indexOf(carId));
-      const box = track.pitBoxes[Math.min(slot, track.pitBoxes.length - 1)];
+    let heading = null;
+    const tw = car.tween;
+    if (tw) {
+      const t = smooth01((now - tw.t0) / tw.dur);
+      pos = _lerp.copy(tw.from).lerp(tw.to, t);
+      _dir.copy(tw.to).sub(tw.from);
+      if (_dir.lengthSq() > 1e-4) heading = _dir.normalize();
+      if (t >= 1) car.tween = null;
+    } else if (pitting) {
+      const box = pitBoxOf(carId);
       pos = box.pos;
       heading = box.tangent;
     } else {
@@ -260,14 +336,17 @@ export function createSpectatorScene(canvas, trackInfo, def) {
       heading = track.tangentAt(s);
     }
     group.position.set(pos.x, 0, pos.z);
-    const target = new THREE.Vector3(pos.x + heading.x, 0, pos.z + heading.z);
-    group.lookAt(target); // non-camera objects: +Z faces the target (the nose)
+    if (heading) {
+      group.lookAt(pos.x + heading.x, 0, pos.z + heading.z); // +Z faces the nose
+    }
+
+    // RETIRED dim: repaint only when the state changes (was: every frame,
+    // every car)
     const dim = state === 'RETIRED';
-    group.traverse((obj) => {
-      if (obj.isMesh) {
-        obj.material.color.set(dim ? 0x3a3f48 : (obj === group.children[0] ? car.color : 0x11141a));
-      }
-    });
+    if (dim !== car.dimmed) {
+      car.dimmed = dim;
+      paintLivery(car);
+    }
 
     if (snapshot) detectEvents(snapshot);
   }
