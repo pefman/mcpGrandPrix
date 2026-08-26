@@ -233,6 +233,7 @@ the same spectator build standalone on port 8080 (split-deploy demo).
 | `PENDING_GRACE_SECONDS` | `30` | a queued agent must re-`join_race` within this window after the next session opens, or its reserved seat is dropped from the FIFO pending queue. |
 | `VOTE_WINDOW_SECONDS` | `30` | post-race spectator track-voting window (s). Set to `0` to disable voting entirely (track rotation falls back to deterministic seeding). |
 | `MCGP_SEASON_FILE` | `/logs/season.json` | championship season persistence file (log volume, same mount as `next_track.json`). Delete it + restart to reset the season. |
+| `EARLY_CLOSE_STRATEGY_WINDOWS` | `1` | close a strategy window as soon as every active car has a plan and its driver seat is satisfied (autopilot/unclaimed seats never wait out the countdown). `0` holds the full countdown. |
 
 For bare local runs, the CLI args to `node src/server/main.js`
 (port, laps, window s, tick delay ms, seed, log file) override the env vars.
@@ -268,16 +269,29 @@ Run from the agent host: `scripts/deploy.sh` (or `--dry-run` to print the planne
 The race alternates between a **strategy window** and a **simulated lap**:
 
 1. A strategy window opens (default 30 s; all cars pause).
-2. Every agent reads the state and submits one strategy packet for the lap.
-   Agents that never submit get a safe default (`normal` everything).
-3. The window closes; the server simulates the lap tick by tick (0.25 s of
+2. Every agent reads the state and submits a strategy for the lap — either a
+   plain packet (`pace`, `tireManagement`, `aggression`, `defend`, `pitNow`)
+   or a **tactic envelope** (MCPG-62): a short `radio` line plus up to 3
+   proposed tactic cards (`key` from the fixed archetype registry, `label`,
+   `narrative`, a full `packet`, exactly one `recommend: true`, and a
+   confidence of 50–99). The server stamps every card with its own
+   projection (`projectedPos` / `projectedDeltaS` / `riskTag`) — the agent's
+   numbers are display-only and never drive the sim.
+3. If a team posts nothing within `JUNIOR_FALLBACK` (10 s), the scripted
+   junior strategist fills in a situational plan (MCPG-62) — autopilot stays
+   meaningful with zero LLMs connected.
+4. The window closes when the countdown ends, or EARLIER (default,
+   `EARLY_CLOSE_STRATEGY_WINDOWS=1`) the moment every active car has a plan
+   and its driver seat is satisfied — autopilot and unclaimed seats never
+   hold the race hostage to the full countdown. The server then simulates
+   the lap tick by tick (0.25 s of
    race time per tick): tire wear, fuel burn, traffic drag, probabilistic
    overtakes and pit stops. At the default 250 ms wall delay per tick the
    sim runs at 1× real time, so a ~1000 m lap takes ~10 s of spectator wall
    time (a pit stop takes its full 18 s, watchable live).
-4. When every active car has crossed the line, the next window opens.
+5. When every active car has crossed the line, the next window opens.
    After the final lap the race ends.
-5. Mid-lap, **reactive windows** (default 10 s, configurable 8–15) pause the
+6. Mid-lap, **reactive windows** (default 10 s, configurable 8–15) pause the
    sim for affected cars only when a trigger fires:
    - `close_battle` — overtake attempt within a tight gap (attacker/defender)
    - `critical_tire_wear` — wear crosses the critical threshold (once per stint)
@@ -287,6 +301,47 @@ The race alternates between a **strategy window** and a **simulated lap**:
    (`attack` / `defend` / `hold` / `pit_now` depending on trigger+role), or do
    nothing (timeout = hold). The outcome feeds the sim (pass/fail, pit flag),
    then ticks resume. Weather / safety-car triggers are deferred.
+
+### The driver seat (MCPG-62)
+
+The spectator client carries a new human role: the **driver**. The AI team
+proposes tactic cards each strategy window; the human either rides
+**AUTOPILOT** (the resting default — the team's recommended card runs) or
+takes the wheel: **lock in** one of the proposed cards or **override** with
+a raw packet. The server simulates the chosen tactic; the consequence shows
+at the next window.
+
+- Transport: the spectator WebSocket (`/spectate`). Outbound messages:
+  `driver_claim` (one driver per car, claim-first; the seat starts in
+  AUTOPILOT), `lock_in` (a proposal key), `override` (a raw packet),
+  `resume_autopilot` (the resting default). Actions are valid only inside a
+  strategy window; a seat's pending action is withdrawn by `resume_autopilot`.
+- A seat persists across windows and on server-side state; a (re)connecting
+  driver's cockpit rehydrates from one snapshot (seat + mode + the open
+  plan). A dead driver connection releases its seats (a fast reconnect
+  re-claims them).
+- Broadcast events: `tactics_proposed`, `driver_locked`, `driver_override`,
+  `autopilot_state` (claim / lock / override / resume / release). Window
+  resolutions are logged per car as `auto_trusted` (autopilot ran the team
+  call), `strategy_resolved` with `mode: trusted | overridden` (driver
+  locked a card), `mode: manual` (raw override) or the pre-MCPG-62
+  `strategy_defaulted`.
+- The cockpit (bottom-right panel) shows the status chip + window countdown,
+  the team's radio feed, the tactic cards (confidence bar, server-stamped
+  projections, LOCK IN buttons), TRUST THE TEAM, the override builder and a
+  DEBRIEF strip of the last decided windows.
+
+### Team dossiers (MCPG-62)
+
+Every proposing team's windows are recorded — per lap: the plan it proposed
+(what it recommended), what ran (chosen + mode), the server's projection and
+what actually happened at the next window — plus trust stats (autopilot /
+trusted / overridden / manual counts, longest unassisted streak) and how
+often the server's projection landed. The dossier persists beside
+`season.json` (`/logs/team_dossiers.json`, atomic writes, restart-safe,
+corrupt file → fresh start) and is surfaced on the results overlay and in
+every snapshot's `dossiers` field. It consumes the same event stream as the
+decision log, so the two can never disagree.
 
 ## MCP tools
 
@@ -302,7 +357,7 @@ field, never transport-level failures.
 | `get_car_state` | Snapshot of one car plus its standing. | Pure read. |
 | `get_standings` | Position, name, status, laps, gap to leader. | Pure read. |
 | `get_season_standings` | All-time championship standings across every completed race: season points (F1 top-8 scoring 15/12/10/8/6/4/2/1 per race), wins, races, DNFs, win streak. Ranked by points, then wins, then fewer DNFs, then name. Updated once per finished race. | Pure read. |
-| `submit_phase_strategy` | Strategy packet for the current window: `pace`, `tireManagement` (`push\|normal\|manage`), `aggression`, `defend` (`0\|1`), `pitNow` (`bool`). Omitted fields default. | First valid packet per window wins; repeats rejected as `duplicate_strategy`, never change state. |
+| `submit_phase_strategy` | Strategy for the current window: a plain packet (`pace`, `tireManagement` (`push\|normal\|manage`), `aggression`, `defend` (`0\|1`), `pitNow` (`bool`) — omitted fields default) **or** a tactic envelope `{ radio (≤200), proposals: [{ key (6-key registry), label (≤24), narrative (≤160), packet, recommend, confidence (50–99) }] }` with exactly one `recommend: true` and ≤3 proposals. Unknown keys / invalid packets are rejected; old plain-packet calls are unchanged. | One plan per car per window; a later submission replaces it (the driver seat's pending action, if any, always wins at close). |
 | `submit_reactive_action` | React to an open reactive window (`attack`/`defend`/`hold`/`pit_now`). See `get_race_state().reactiveWindow` for trigger, `carIds`, and `allowedByCar`. | First valid action per `(carId, windowId)` wins; duplicates → `duplicate_action`; wrong car / no window → error, no state change. |
 
 Game state is 100% server-authoritative: the simulation never reads from a

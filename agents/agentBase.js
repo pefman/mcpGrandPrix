@@ -194,6 +194,20 @@ export function buildView(state, carId) {
   const car = state.cars.find((c) => c.id === carId);
   if (!car) return null;
   const standing = state.standings.find((s) => s.carId === carId);
+  const myGap = standing?.gapToLeaderM ?? null;
+  // Gap to the immediate car ahead / behind, derived from the standings'
+  // leader-gap rows (both are server-authoritative). MCPG-62: the junior
+  // strategist (and any team) plans around battles, not just the leader.
+  let gapAhead = null;
+  let gapBehind = null;
+  if (myGap != null && standing && standing.position > 1) {
+    const ahead = state.standings.find((s) => s.position === standing.position - 1);
+    if (ahead) gapAhead = Math.max(0, myGap - (ahead.gapToLeaderM ?? 0));
+  }
+  if (myGap != null && standing) {
+    const behind = state.standings.find((s) => s.position === standing.position + 1);
+    if (behind) gapBehind = (behind.gapToLeaderM ?? 0) - myGap;
+  }
   return {
     car: {
       id: car.id,
@@ -201,6 +215,8 @@ export function buildView(state, carId) {
       completedLaps: car.completedLaps,
       positionM: car.positionM,
       gapToLeaderM: car.gapToLeaderM,
+      gapToCarAheadM: gapAhead,
+      gapToCarBehindM: gapBehind,
       tireWearPct: car.tireWearPct,
       fuelKg: car.fuelKg,
       pitRequested: car.pitRequested,

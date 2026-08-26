@@ -15,6 +15,11 @@
  *                     owns its own.
  *   `autoStartGate` — `() => boolean`, polled while in `setup`; `true` holds
  *                     the auto-start.
+ *   `dossier`       — shared TeamDossier (MCPG-62): the per-team tactic
+ *                     history (autopilot vs driver choices, projection
+ *                     accuracy) persists beside season.json on the
+ *                     persistent server; bare sessions omit it or keep an
+ *                     in-memory copy.
  *
  * Tests can pass `strategyWindowSeconds: 0` / `reactiveWindowSeconds: 0` and
  * a fast `delayFn` to run a full race as fast as the event loop allows.
@@ -22,10 +27,25 @@
 import { randomUUID } from 'node:crypto';
 import { CONFIG } from '../config.js';
 import { DecisionLogger } from '../logging/decisionLogger.js';
+import { TeamDossier } from '../teamDossier.js';
 import { Simulation } from '../sim/simulation.js';
 import { Track } from '../track.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * MCPG-62: the tactic/driver events the spectator hub must push to clients
+ * immediately (besides the 10 Hz snapshots that carry the same state for
+ * (re)connecting drivers).
+ */
+const HUB_EVENT_TYPES = new Set([
+  'tactics_proposed',
+  'driver_locked',
+  'driver_override',
+  'autopilot_state',
+  'auto_trusted',
+  'strategy_resolved',
+]);
 
 export class RaceSession {
   constructor({
@@ -41,13 +61,22 @@ export class RaceSession {
     delayFn = sleep,
     logger = null,
     autoStartGate = null,
+    dossier = null, // MCPG-62 shared TeamDossier (null = a private in-memory one)
+    // MCPG-62: forwarded to the simulation
+    juniorFallbackSeconds = CONFIG.tactics.juniorFallbackSeconds,
+    earlyCloseStrategyWindows = CONFIG.timing.earlyCloseStrategyWindows,
   } = {}) {
     this.ownsLogger = !logger;
     this.logger = logger ?? new DecisionLogger({ file: logFile, stdout: logToStdout });
+    // Every session records its teams' tactic history; the orchestrator
+    // injects the shared (persisted) dossier, bare sessions keep an
+    // in-memory one so the results overlay works in every flavor.
+    this.dossier = dossier ?? new TeamDossier({ file: null });
     this.autoStartGate = autoStartGate;
     this.raceId = randomUUID(); // identifies this server instance's race (GET /healthz)
     this.tickWallDelayMs = tickWallDelayMs;
     this.delayFn = delayFn;
+    this.hubSink = null; // (event) => void — spectator-hub broadcast hook (MCPG-62)
     this.sim = new Simulation({
       totalLaps,
       strategyWindowSeconds,
@@ -55,8 +84,18 @@ export class RaceSession {
       tickSeconds,
       seed,
       track: track ?? new Track(),
-      onEvent: (event) => this.logger.log(event),
+      juniorFallbackSeconds,
+      earlyCloseStrategyWindows,
+      onEvent: (event) => {
+        this.logger.log(event);
+        // The dossier consumes the same event stream as the JSONL log, so
+        // the two can never disagree (MCPG-62). raceId is injected because
+        // the sim's events are race-scoped, not race-labeled.
+        if (this.dossier) this.dossier.onEvent({ ...event, raceId: this.raceId });
+        if (HUB_EVENT_TYPES.has(event.type) && this.hubSink) this.hubSink(event);
+      },
     });
+    if (this.dossier) this.dossier.beginRace(this.raceId);
     this._running = false;
     this._orchestrator = null; // set by RaceOrchestrator._openSession (MCPG-28)
   }
@@ -98,14 +137,52 @@ export class RaceSession {
         phase: 'voting',
         vote: this._orchestrator?.voteView(remainingS),
         season: this._orchestrator?.seasonView() ?? null, // MCPG-49
+        dossiers: this.dossier?.viewForRace(this.raceId) ?? null, // MCPG-62
       };
     }
-    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [], season: this._orchestrator?.seasonView() ?? null };
+    return {
+      ...this.sim.state(),
+      pending: this._orchestrator?.pendingView() ?? [],
+      season: this._orchestrator?.seasonView() ?? null,
+      dossiers: this.dossier?.viewForRace(this.raceId) ?? null,
+    };
   }
 
   castVote(sessionId, trackId) {
     if (this._orchestrator) return this._orchestrator.castVote(sessionId, trackId);
     return { accepted: false, error: 'no vote window open' };
+  }
+
+  // ---------------------------------------------------- driver seat (MCPG-62)
+
+  /** Spectator hub hook: broadcast tactic/driver events immediately. */
+  setHubSink(fn) {
+    this.hubSink = fn;
+  }
+
+  /** Claim the driver seat for a car (one driver per car, claim-first). */
+  claimDriverSeat(carId, driverSessionId) {
+    return this.sim.claimDriverSeat(carId, driverSessionId);
+  }
+
+  /** Lock in one of the team's proposed tactics for this window. */
+  lockInTactic(carId, driverSessionId, proposalKey) {
+    return this.sim.lockInTactic(carId, driverSessionId, proposalKey);
+  }
+
+  /** Override with a raw strategy packet for this window. */
+  overrideTactic(carId, driverSessionId, packet) {
+    return this.sim.overrideTactic(carId, driverSessionId, packet);
+  }
+
+  /** Flip the seat back to AUTOPILOT (resting default state). */
+  resumeAutopilot(carId, driverSessionId) {
+    return this.sim.resumeAutopilot(carId, driverSessionId);
+  }
+
+  /** Release the seats a driver session held (its WS disconnected). */
+  releaseDriverSeats(driverSessionId) {
+    return this.sim.releaseDriverSeats(driverSessionId);
   }
 
   /** Start the race (requires >= minAgents). Opens the first strategy window. */
@@ -132,7 +209,13 @@ export class RaceSession {
   state() {
     // `season` (MCPG-49): the ranked all-time championship standings, or
     // null for bare sessions (no orchestrator / no persistence).
-    return { ...this.sim.state(), pending: this._orchestrator?.pendingView() ?? [], season: this._orchestrator?.seasonView() ?? null };
+    // `dossiers` (MCPG-62): this race's per-team tactic history.
+    return {
+      ...this.sim.state(),
+      pending: this._orchestrator?.pendingView() ?? [],
+      season: this._orchestrator?.seasonView() ?? null,
+      dossiers: this.dossier?.viewForRace(this.raceId) ?? null,
+    };
   }
 
   carView(carId) {
@@ -150,6 +233,11 @@ export class RaceSession {
 
   submitPhaseStrategy(carId, strategy) {
     return this.sim.submitPhaseStrategy(carId, strategy);
+  }
+
+  /** Junior-strategist fallback poll (MCPG-62); no-op outside the window. */
+  checkJuniorFallback() {
+    this.sim.checkJuniorFallback();
   }
 
   submitReactiveAction(carId, action) {
@@ -173,7 +261,8 @@ export class RaceSession {
             await this.delayFn(100); // idle poll while waiting for agents
           }
         } else if (this.sim.phase === 'strategy_window') {
-          if (this.sim.windowRemainingS() <= 0) {
+          this.checkJuniorFallback(); // MCPG-62: fill in teams that never post
+          if (this.sim.windowRemainingS() <= 0 || this.sim.canEarlyClose()) {
             this.closeWindow();
           } else {
             await this.delayFn(25);

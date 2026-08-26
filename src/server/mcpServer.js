@@ -7,19 +7,68 @@
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { TACTIC_LIMITS } from '../sim/tactics.js';
+import { ARCHETYPE_KEYS } from '../sim/archetypes.js';
 
 // Strategy packet: the four tactical levers + a pit request. Every field has
 // a default so a minimal `{}` packet is always valid; unknown fields are
 // rejected to keep the contract tight.
+//
+// MCPG-62 schema fix: aggression/defend are BINARY 0|1 (the sim's
+// parseStrategy only ever accepted 0|1 — the old 0..1 float advertisement
+// made every fractional submission an invalid_strategy). Defaults align
+// with the sim's defaultStrategy() (0 = off).
 const strategySchema = z
   .object({
     pace: z.enum(['push', 'normal', 'manage']).default('normal'),
     tireManagement: z.enum(['manage', 'normal', 'push']).default('normal'),
-    aggression: z.number().min(0).max(1).default(0.5),
-    defend: z.number().min(0).max(1).default(0.5),
+    aggression: z.union([z.literal(0), z.literal(1)]).default(0),
+    defend: z.union([z.literal(0), z.literal(1)]).default(0),
     pitNow: z.boolean().default(false),
   })
   .strict();
+
+// Tactic envelope (MCPG-62): the optional wrapper a team plan can carry.
+// `radio` is the team's message to the driver; `proposals` are the tactic
+// cards (fixed archetype keys, one recommended). The server stamps each
+// card with projections (projectedPos/delta/risk) before broadcasting.
+// Mirrors validateTacticEnvelope() in src/sim/tactics.js (the sim-level
+// authority; keep the two in sync).
+const proposalSchema = z
+  .object({
+    key: z.enum(ARCHETYPE_KEYS),
+    label: z.string().min(1).max(TACTIC_LIMITS.labelMax),
+    narrative: z.string().max(TACTIC_LIMITS.narrativeMax).optional(),
+    packet: strategySchema,
+    recommend: z.boolean(),
+    confidence: z.number().int().min(TACTIC_LIMITS.confidenceMin).max(TACTIC_LIMITS.confidenceMax),
+  })
+  .strict();
+
+const tacticEnvelopeSchema = z
+  .object({
+    radio: z.string().max(TACTIC_LIMITS.radioMax).optional(),
+    proposals: z.array(proposalSchema).min(1).max(TACTIC_LIMITS.maxProposals),
+  })
+  .strict()
+  .refine(
+    (e) => e.proposals.filter((p) => p.recommend).length === 1,
+    { message: 'envelope must recommend exactly one proposal' },
+  )
+  .refine(
+    (e) => new Set(e.proposals.map((p) => p.key)).size === e.proposals.length,
+    { message: 'proposal keys must be unique within an envelope' },
+  );
+
+// A submission is EITHER a plain packet (the pre-MCPG-62 contract, still
+// fully supported) OR an envelope. A plain packet cannot match the
+// envelope (it has no `proposals` array) and vice versa (the strict packet
+// rejects the envelope's extra fields).
+const strategyOrEnvelopeSchema = z.union([strategySchema, tacticEnvelopeSchema]);
+
+// Exported for tests (and future tooling): the exact contract the MCP layer
+// enforces before a submission reaches the simulation.
+export { strategySchema, tacticEnvelopeSchema, strategyOrEnvelopeSchema };
 
 // Reactive actions (Slice 3): exactly one per window per car.
 const reactiveTypes = ['attack', 'defend', 'hold', 'pit_now'];
@@ -116,7 +165,8 @@ export function createMcpServer(host, { sessionId } = {}) {
       title: 'Get race state',
       description:
         'Full current race state: phase, lap, per-car status/position/tires, standings, ' +
-        'open window details, and the pending queue (names + positions) for the next race. ' +
+        'open window details, driver seats + posted tactic plans (driverSeats, tactics), ' +
+        'this race\'s team dossiers, and the pending queue (names + positions) for the next race. ' +
         'Poll this to drive your strategy loop; strategy decisions are only accepted while ' +
         'the phase is strategy_window (same for reactive actions in reactive_window).',
       inputSchema: {},
@@ -171,20 +221,25 @@ export function createMcpServer(host, { sessionId } = {}) {
     {
       title: 'Submit lap strategy',
       description:
-        'Submit this lap\'s strategy packet for your car: pace (push/normal/manage), ' +
-        'tireManagement (manage/normal/push), aggression and defend (0-1), pitNow. ' +
-        'Only accepted while a strategy_window is open; exactly one per car per lap ' +
-        '(re-submitting the same lap returns duplicate_strategy). If you miss the ' +
-        'window the server applies lastStrategy or normal.',
+        "Submit this lap's strategy for your car while a strategy_window is open. " +
+        'Two shapes (one per lap, first valid submission wins; re-submitting returns duplicate_strategy):\n' +
+        '1. PLAIN PACKET — { pace: push|normal|manage, tireManagement: manage|normal|push, aggression: 0|1, defend: 0|1, pitNow: boolean } (every field optional; this is the original contract, unchanged).\n' +
+        '2. TACTIC ENVELOPE (optional, for teams with a human driver on the seat) — { radio?: string (<=200 chars), proposals: [1-3 cards] } where each card is ' +
+        `{ key: ${ARCHETYPE_KEYS.join('|')}, label: string (<=24), narrative?: string (<=160), packet: <plain packet shape>, recommend: boolean, confidence: integer 50-99 }. ` +
+        'Exactly one card must be recommend: true and keys must be unique. The server stamps every card with projections ' +
+        '(projectedPos / projectedDeltaS / riskTag) from its authoritative state — your own numbers (e.g. confidence) are display-only and never drive the sim. ' +
+        'With a driver seated in AUTOPILOT the recommended card runs automatically; the driver may lock another card or override with a raw packet. ' +
+        'If no plan arrives early in the window a scripted junior strategist fills in for you. ' +
+        'If you miss the window the server applies your last strategy or the default.',
       inputSchema: {
         carId: z.number().int().positive(),
-        strategy: strategySchema.optional(),
+        strategy: strategyOrEnvelopeSchema.optional(),
       },
     },
     async ({ carId, strategy }) => {
       try {
         const res = current().submitPhaseStrategy(carId, strategy ?? {});
-        if (res.accepted) return jsonResult({ accepted: true, carId, lap: res.lap });
+        if (res.accepted) return jsonResult({ accepted: true, carId, lap: res.lap, ...(res.projections ? { projections: res.projections } : {}) });
         return jsonResult({ accepted: false, error: res.error, details: res.details });
       } catch (err) {
         return jsonResult({ accepted: false, error: 'rejected', details: err.message });

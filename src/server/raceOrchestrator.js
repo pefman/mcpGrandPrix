@@ -25,6 +25,7 @@ import { RaceSession } from './raceSession.js';
 import { Track } from '../track.js';
 import { DEFAULT_TRACK_ID, getTrackDef, loadTrackDefs, persistNextTrack, readNextTrack } from '../tracks.js';
 import { applyRace, readSeason, saveSeason, rankSeason } from '../season.js';
+import { TeamDossier } from '../teamDossier.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -42,6 +43,9 @@ export class RaceOrchestrator {
    * @param {string}   [opts.nextTrackFile]  where the vote winner is persisted (restart-safe)
    * @param {string}   [opts.seasonFile]     where the championship season persists (MCPG-49);
    *                                         log-volume default, same pattern as nextTrackFile
+   * @param {string|null} [opts.dossierFile]  where the team dossiers persist (MCPG-62);
+   *                                         log-volume default (same volume as season),
+   *                                         null = in-memory only
    * @param {Function} [opts.onVoteStart]    (info) => void — voting window opened (hub broadcasts)
    * @param {Function} [opts.onVoteEnd]      (result) => void — voting window closed (hub finalizes)
    */
@@ -62,6 +66,7 @@ export class RaceOrchestrator {
       voteWindowSeconds = CONFIG.timing.voteWindowSeconds,
       nextTrackFile = null, // defaults to the log volume (see tracks.js)
       seasonFile = null, // defaults to the log volume (see season.js, MCPG-49)
+      dossierFile = null, // defaults to the log volume (see teamDossier.js, MCPG-62)
       delayFn = sleep,
       logger = null,
       onSession = null,
@@ -95,6 +100,23 @@ export class RaceOrchestrator {
       console.warn(`[season] corrupt season file ${this.seasonFile} — starting an empty season (${loaded.error})`);
     } else if (loaded.source === 'loaded') {
       this.logger.log({ type: 'season_loaded', file: this.seasonFile, drivers: Object.keys(this.season.drivers).length });
+    }
+    // MCPG-62: the team dossiers (per-window autopilot/driver history) live
+    // beside the season on the log volume, same atomic-write pattern. The
+    // entry point (main.js) passes DOSSIER_FILE; tests and bare local runs
+    // leave it null to keep the dossiers in memory only.
+    this.dossier = new TeamDossier({
+      file: dossierFile,
+      onPersist: (err) => {
+        if (err) {
+          this.logger.log({ type: 'dossier_save_failed', file: this.dossier.file, error: err?.message ?? String(err) });
+          console.warn(`[dossier] could not persist ${this.dossier.file}: ${err?.message ?? err} — dossier kept in memory`);
+        }
+      },
+    });
+    if (this.dossier.corrupt) {
+      this.logger.log({ type: 'dossier_file_corrupt', file: this.dossier.file, error: this.dossier.corruptError, action: 'started_empty' });
+      console.warn(`[dossier] corrupt dossier file ${this.dossier.file} — starting empty dossiers (${this.dossier.corruptError})`);
     }
     this.maxAgents = maxAgents;
     this.resultsHoldSeconds = resultsHoldSeconds;
@@ -310,6 +332,28 @@ export class RaceOrchestrator {
     return rankSeason(this.season);
   }
 
+  /** MCPG-62 driver-seat routing: the hub asks the orchestrator, which
+   *  forwards to the current session (mirrors the castVote pattern). */
+  claimDriverSeat(carId, driverSessionId) {
+    return this.session?.claimDriverSeat(carId, driverSessionId) ?? { accepted: false, error: 'no_race_session' };
+  }
+
+  lockInTactic(carId, driverSessionId, proposalKey) {
+    return this.session?.lockInTactic(carId, driverSessionId, proposalKey) ?? { accepted: false, error: 'no_race_session' };
+  }
+
+  overrideTactic(carId, driverSessionId, packet) {
+    return this.session?.overrideTactic(carId, driverSessionId, packet) ?? { accepted: false, error: 'no_race_session' };
+  }
+
+  resumeAutopilot(carId, driverSessionId) {
+    return this.session?.resumeAutopilot(carId, driverSessionId) ?? { accepted: false, error: 'no_race_session' };
+  }
+
+  releaseDriverSeats(driverSessionId) {
+    return this.session?.releaseDriverSeats(driverSessionId) ?? 0;
+  }
+
   /**
    * MCPG-49: award championship points for a finished race (once per
    * session), persist the season, and log `season_points_awarded`. Called
@@ -491,7 +535,7 @@ export class RaceOrchestrator {
     this.raceSeq += 1;
     const track = this._nextTrackInstance();
     this.opts.track = track;
-    const s = new RaceSession({ ...this.opts, logger: this.logger, autoStartGate: () => this._holdForPending() });
+    const s = new RaceSession({ ...this.opts, logger: this.logger, dossier: this.dossier, autoStartGate: () => this._holdForPending() });
     this.session = s;
     s._orchestrator = this; // votes + voting info route back here (MCPG-28)
     this._graceUntilMs = Date.now() + this.pendingGraceSeconds * 1000;

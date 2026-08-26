@@ -68,6 +68,7 @@
     <div class="overlay-card">
       <div class="overlay-title">RACE COMPLETE</div>
       <div id="final-standings"></div>
+      <div id="finished-dossiers" class="hidden"></div>
       <div class="overlay-sub muted" id="finished-note">Results are held for a moment, then the next race opens.</div>
     </div>
   </div>
@@ -79,6 +80,52 @@
       <div id="vote-countdown" class="vote-countdown">—</div>
       <div id="vote-options"></div>
       <div class="overlay-sub muted" id="vote-note">The track with the most votes hosts the next race.</div>
+    </div>
+  </div>
+
+  <!-- driver seat cockpit (MCPG-62): AI team proposes, the human driver
+       locks in / overrides / rides AUTOPILOT. Bottom-right panel. -->
+  <div id="cockpit" class="hidden">
+    <div class="ck-head">
+      <span class="ck-title">DRIVER SEAT</span>
+      <span id="cockpit-chip" class="ck-chip" data-mode="unclaimed">UNCLAIMED</span>
+      <span id="cockpit-countdown" class="ck-countdown">—</span>
+    </div>
+
+    <!-- unclaimed: claim a team's car (one driver per car, claim-first) -->
+    <div id="cockpit-claim" class="ck-claim">
+      <div class="ck-claim-note">Take the seat of a team's car. AUTOPILOT runs the team's call unless you lock or override.</div>
+      <div id="cockpit-claim-list"></div>
+    </div>
+
+    <!-- claimed: the cockpit itself -->
+    <div id="cockpit-panel" class="hidden">
+      <div id="cockpit-radio" class="ck-radio"></div>
+      <div id="cockpit-cards"></div>
+      <div id="cockpit-actions" class="ck-actions"></div>
+      <div id="cockpit-override" class="ck-override">
+        <div class="ck-ov-title">OVERRIDE — BUILD YOUR OWN PACKET</div>
+        <div class="ck-ov-row"><span class="ck-ov-label">PACE</span>
+          <button type="button" class="ck-toggle" data-ov="pace" data-val="push">PUSH</button>
+          <button type="button" class="ck-toggle" data-ov="pace" data-val="normal">NORMAL</button>
+          <button type="button" class="ck-toggle" data-ov="pace" data-val="manage">MANAGE</button>
+        </div>
+        <div class="ck-ov-row"><span class="ck-ov-label">ATTACKS</span>
+          <button type="button" class="ck-toggle" data-ov="aggression" data-val="0">OFF</button>
+          <button type="button" class="ck-toggle" data-ov="aggression" data-val="1">ON</button>
+        </div>
+        <div class="ck-ov-row"><span class="ck-ov-label">DEFEND</span>
+          <button type="button" class="ck-toggle" data-ov="defend" data-val="0">OFF</button>
+          <button type="button" class="ck-toggle" data-ov="defend" data-val="1">ON</button>
+        </div>
+        <div class="ck-ov-row"><span class="ck-ov-label">PIT NOW</span>
+          <button type="button" class="ck-toggle" data-ov="pitNow" data-val="0">NO</button>
+          <button type="button" class="ck-toggle" data-ov="pitNow" data-val="1">YES</button>
+        </div>
+        <button type="button" class="ck-btn ck-btn-override" data-action="override-send">SEND OVERRIDE</button>
+      </div>
+      <div id="cockpit-debrief" class="ck-debrief"></div>
+      <div id="cockpit-alert" class="ck-alert hidden"></div>
     </div>
   </div>
 
