@@ -175,10 +175,11 @@ export function buildProps(propDefs, rng) {
 
 /**
  * Seeded scatter: random candidates inside the circuit's bounding box,
- * kept only when clear of the road (roadWidthM/2 + minOffsetM) and the water.
- * `samples` are {x, z} points along the centerline.
+ * kept only when clear of the road (roadWidthM/2 + minOffsetM), the water,
+ * and any exclusion zones ([x, z, r] circles — MCPG-64, keeps scenery out
+ * of garages/stands/etc.). `samples` are {x, z} points along the centerline.
  */
-export function scatterProps(def, samples, roadWidthM, water = []) {
+export function scatterProps(def, samples, roadWidthM, water = [], exclusions = []) {
   const sc = def.scatter;
   if (!sc) return [];
   const rng = createRng(sc.seed);
@@ -192,6 +193,7 @@ export function scatterProps(def, samples, roadWidthM, water = []) {
   const pad = 45;
   minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
 
+  const zones = (exclusions ?? []).filter((z) => Array.isArray(z) && z.length >= 3);
   const out = [];
   let tries = (sc.count ?? 0) * 30;
   while (out.length < (sc.count ?? 0) && tries-- > 0) {
@@ -212,6 +214,13 @@ export function scatterProps(def, samples, roadWidthM, water = []) {
         const dz = z - w.z;
         const wn = w.r + 4;
         if (dx * dx + dz * dz < wn * wn) { ok = false; break; }
+      }
+    }
+    if (ok) {
+      for (const [zx, zz, zr] of zones) {
+        const dx = x - zx;
+        const dz = z - zz;
+        if (dx * dx + dz * dz < zr * zr) { ok = false; break; }
       }
     }
     if (!ok) continue;

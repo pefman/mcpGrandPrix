@@ -11,7 +11,8 @@
     "demo:public": "node scripts/demo.js --url https://gp.peterfrank.se/mcp --watch https://gp.peterfrank.se/",
     "agent": "node agents/run.js",
     "test": "vitest run",
-    "visual": "node scripts/visualCheck.mjs"
+    "visual": "node scripts/visualCheck.mjs",
+    "visual:shots": "node scripts/sceneryShots.mjs"
   },
   "license": "MIT",
   "dependencies": {

@@ -7,8 +7,10 @@
  * with `image-rendering: pixelated`: chunky pixels, no antialiasing.
  * Background and lights come from the track theme.
  *
- * Step 2 (MCPG-44): one soft directional shadow (chunky, on-brand) and a
- * thick island slab under the ground plane — the floating-tabletop read.
+ * Step 2 (MCPG-44): one soft directional shadow (chunky, on-brand) and the
+ * floating diorama read. MCPG-64: the flat floor + slab became the voxel
+ * grass island from client/design/reference/f1-track.html (scenery.js);
+ * shadows now cover the whole island so distant scenery keeps its shadow.
  * Shadows are a single toggle (SHADOWS_ENABLED); if they moiré at the
  * 1/4-res buffer, flipping it off is the Step-5 lever.
  *
@@ -132,16 +134,22 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   const track = buildTrack(scene, trackInfo, def, { shadows: SHADOWS_ENABLED });
   scene.add(track.group);
 
-  // circuit center + size (shadow setup and camera share these)
+  // circuit center + size (shadow setup and camera share these); the voxel
+  // island (MCPG-64) defines the full diorama extent
   const center = track.bbox.getCenter(new THREE.Vector3());
-  const size = track.bbox.getSize(new THREE.Vector3());
+  const fit = track.fitBox;
+  const fitSize = fit.getSize(new THREE.Vector3());
 
-  // soft chunky shadows: only props cast, only the ground floor receives —
-  // the shadow map stays sparse and legible at the 1/4-res buffer
+  // soft chunky shadows: props + voxels cast, road and island tops receive —
+  // the shadow frustum covers the whole island so distant scenery keeps its
+  // shadow too
   if (SHADOWS_ENABLED) {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    const spread = Math.max(size.x, size.z) + 60;
+    // tall scenery (city towers, floodlights) widens the light-space
+    // footprint of the island — include object height or the shadow
+    // frustum edge cuts a visible seam across the ground (MCPG-64)
+    const spread = Math.max(fitSize.x, fitSize.z) / 2 + 60 + fitSize.y * 0.5;
     sun.position.set(center.x + spread * 0.45, 380, center.z + spread * 0.55);
     sun.target.position.copy(center);
     scene.add(sun.target);
@@ -160,7 +168,8 @@ export function createSpectatorScene(canvas, trackInfo, def) {
 
   // fixed camera: from the south (+z), elevated, aimed at the track center
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 10000);
-  const distance = (size.x + size.z) * 0.75 + 400;
+  const circuitSize = track.bbox.getSize(new THREE.Vector3());
+  const distance = (circuitSize.x + circuitSize.z) * 0.75 + 400;
   // No fog (Step 5, MCPG-47): the ground is a finite island slab, and its
   // hard edge against the sky is the intended diorama border — foging it
   // would just blur the tabletop's far rim.
@@ -173,7 +182,7 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   // near=10 (the track is ~500+ m away) keeps depth precision fine enough
   // that the centimetre-scale road overlays can't z-fight
   camera.near = 10;
-  camera.far = distance + size.length() * 1.5 + 1000;
+  camera.far = distance + circuitSize.length() * 1.5 + 1000;
 
   const cars = new Map(); // carId -> { group, color, liveryParts, state, name, ... }
   const _lerp = new THREE.Vector3(); // scratch for the pit-transition tween
@@ -387,6 +396,7 @@ export function createSpectatorScene(canvas, trackInfo, def) {
 
   function tick(nowMs) {
     fx.update(nowMs);
+    track.sceneryUpdate(nowMs); // voxel scenery animation (gantry lights, MCPG-64)
   }
 
   return {

@@ -1,18 +1,22 @@
 /**
- * Track rendering (MCPG-27 rewrite).
+ * Track rendering (MCPG-27 rewrite; voxel art direction MCPG-64).
  *
  * Builds the visual track from a track *definition* (tracks/*.json):
- * Catmull-Rom centerline normalized to the sim's exact length, textured
- * road ribbon, curb runs on hard corners, checker start line, pit lane +
- * boxes, water, themed ground, and props (hand-placed + seeded scatter).
+ * Catmull-Rom centerline normalized to the sim's exact length, two-tone
+ * asphalt road ribbon, curb runs on hard corners, checker start line,
+ * pit lane + boxes, water, and props (hand-placed + seeded scatter).
  *
- * Everything is plain boxes/ribbons sampled with NearestFilter textures —
- * the pixel-art direction lives here and in pixelTextures.js / props.js.
+ * The voxel art direction from client/design/reference/f1-track.html
+ * (floating grass island, rumble strips, dashes, red/white barriers,
+ * pit garages + crew, curved stands, tire walls, DRS boards,
+ * floodlights, start gantry) lives in scenery.js — map-driven via the
+ * def's optional `scenery` block.
  */
 import * as THREE from 'three';
-import { makeGroundTexture, makeRoadTexture, makeCheckerTexture } from './pixelTextures.js';
+import { makeCheckerTexture } from './pixelTextures.js';
 import { buildProps, scatterProps } from './props.js';
 import { createRng } from './rng.js';
+import { buildScenery, resolveScenery } from './scenery.js';
 
 const CURB_MIN_RUN_M = 15;
 const CURB_WIDTH_M = 2.2;
@@ -101,31 +105,6 @@ function ribbonOnArc(base, arclen, lengthM, s0, s1, opts) {
   return pieces;
 }
 
-/** Low wall (barrier) along an arc: quad from y to y+h on the outer edge. */
-function wallRibbon(base, arclen, s0, s1, { h, y = 0, offsetM, segs = 120 }) {
-  const pos = [];
-  const idx = [];
-  for (let i = 0; i <= segs; i++) {
-    const u = s0 + ((s1 - s0) * i) / segs;
-    const p = base.getPointAt(u);
-    const t = base.getTangentAt(u);
-    const nx = -t.z;
-    const nz = t.x;
-    const x = p.x + nx * offsetM;
-    const z = p.z + nz * offsetM;
-    pos.push(x, y, z, x, y + h, z);
-  }
-  for (let i = 0; i < segs; i++) {
-    const a = i * 2;
-    idx.push(a, a + 1, a + 3, a + 1, a + 2, a + 3);
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setIndex(idx);
-  geo.computeVertexNormals();
-  return geo;
-}
-
 /** Curvature (1/m) at each sample index. */
 function curvatureSamples(curve, arclen) {
   const out = new Array(CURVATURE_SAMPLES);
@@ -189,36 +168,39 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
   const pointAt = (s) => curve.getPointAt(wrap(s) / arclen);
   const tangentAt = (s) => curve.getTangentAt(wrap(s) / arclen);
 
-  // ---- ground plane, sized once the bbox is known (see below) so the
-  // theme sky stays visible around the circuit's edge
-  const groundTex = makeGroundTexture(theme);
-  // ground is a (tiny) group: it carries the sized floor mesh AND the
-  // diorama island slab under it (Step 2, MCPG-44) — one unit to size,
-  // place, traverse and dispose
-  const ground = new THREE.Group();
-  const groundFloor = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, 1),
-    new THREE.MeshLambertMaterial({ map: groundTex }),
-  );
-  groundFloor.rotation.x = -Math.PI / 2;
-  // 2 m below the road: at the spectator camera's shallow angle the road
-  // surface sweeps ~0.4 m of depth per screen pixel, so separations must
-  // exceed that or the surfaces z-fight
-  groundFloor.position.y = -2;
-  ground.add(groundFloor);
-  group.add(ground);
+  // ---- voxel scenery layer (MCPG-64): floating island + all dressing.
+  // Built first — the island footprint defines the camera fit box below.
+  const scn = buildScenery({
+    curve,
+    arclen,
+    lengthM,
+    roadWidthM,
+    theme,
+    scenery: resolveScenery(def),
+  });
+  group.add(scn.group);
 
   // ---- road (overlays sit >0.6 m above it, beyond the per-pixel depth
   // sweep, so they never z-fight; polygonOffset would push the road back
   // ~1.7 m at this camera angle and hide it under the ground)
-  const roadMat = new THREE.MeshLambertMaterial({ map: makeRoadTexture(theme) });
+  // MCPG-64: the reference's two-tone asphalt strips, as per-segment
+  // vertex colors along the same ribbon the sim drives on
+  const ROAD_SEGS = 480;
+  const bandM = (2 * arclen) / ROAD_SEGS;
+  const stripA = new THREE.Color(theme.road.base);
+  const stripB = new THREE.Color(theme.road.base).offsetHSL(0, 0, -0.055);
+  const roadMat = new THREE.MeshLambertMaterial({ vertexColors: true });
   const roadGeo = flatRibbon(curve, arclen, 0, 1, {
     widthM: roadWidthM,
     y: 0,
-    segs: 220,
-    uvM: theme.road.tileM,
+    segs: ROAD_SEGS,
+    colors: (s) => (Math.floor(s / bandM) % 2 === 0 ? stripA : stripB),
   });
-  group.add(new THREE.Mesh(roadGeo, roadMat));
+  const roadMesh = new THREE.Mesh(roadGeo, roadMat);
+  // no receiveShadow here: at the island shadow-map's texel size the road
+  // (0.5 m above the grass tops) darkens from neighbor-cell slop — the
+  // pre-MCPG-64 renderer didn't receive on the road either
+  group.add(roadMesh);
 
   // ---- curbs on hard corners (outer edge, alternating red/white)
   // gentle circuits (e.g. Coastal Palm) lower the threshold in their theme
@@ -283,34 +265,22 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
   const pitGeo = flatRibbon(pitCurve, pitCurve.getLength(), 0, 1, { widthM: 5, y: 0.5, uvM: 2 });
   group.add(new THREE.Mesh(pitGeo, new THREE.MeshLambertMaterial({ color: new THREE.Color(theme.pit) })));
 
-  const pitBoxes = [];
-  for (const s of [35, 55, 75]) {
-    const p = curve.getPointAt(wrap(s) / arclen);
-    const t = curve.getTangentAt(wrap(s) / arclen);
-    pitBoxes.push({
-      s,
-      pos: new THREE.Vector3(p.x + (-t.z) * pitOffset, 0, p.z + t.x * pitOffset),
-      tangent: t,
-    });
-  }
+  // pit boxes come from the scenery layer's garage slots (MCPG-64): every
+  // car tweens to its own marked box instead of sharing three
+  const pitBoxes = scn.pitSlots.map((slot) => ({
+    s: slot.s,
+    pos: slot.pos.clone(),
+    tangent: slot.tangent.clone(),
+  }));
 
-  // ---- barriers
-  if (theme.barriers) {
-    const barrierMat = new THREE.MeshLambertMaterial({ color: 0xd8dbe2, side: THREE.DoubleSide });
-    group.add(new THREE.Mesh(
-      wallRibbon(curve, arclen, 0, 1, { h: 0.9, y: 0, offsetM: roadWidthM / 2 + 3 }),
-      barrierMat,
-    ));
-  }
-
-  // ---- water
+  // ---- water (a lagoon inset into the island top, just under the road)
   const waterCircles = def.water ?? [];
   if (waterCircles.length && theme.water) {
     const waterMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.water) });
     for (const w of waterCircles) {
       const m = new THREE.Mesh(new THREE.CircleGeometry(w.r, 40), waterMat);
       m.rotation.x = -Math.PI / 2;
-      m.position.set(w.x, -1.5, w.z);
+      m.position.set(w.x, -0.32, w.z);
       group.add(m);
     }
   }
@@ -321,7 +291,7 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     const p = curve.getPointAt(i / 160);
     samples.push({ x: p.x, z: p.z });
   }
-  const scattered = scatterProps(def, samples, roadWidthM, waterCircles);
+  const scattered = scatterProps(def, samples, roadWidthM, waterCircles, resolveScenery(def).scatterExclusions);
   const propsGroup = buildProps((def.props ?? []).concat(scattered), rng);
   group.add(propsGroup);
   if (shadowsOn) {
@@ -332,79 +302,31 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     });
   }
 
-  // ---- bounding box (track only, ground excluded) with generous margin
+  // ---- bounding box (circuit only) with a modest margin
   const bbox = new THREE.Box3();
   const v = new THREE.Vector3();
   for (let i = 0; i < 100; i++) {
     v.copy(curve.getPointAt(i / 100));
     bbox.expandByPoint(v);
   }
-  // keep the ground plane centered on the circuit, not on the world origin
-  const trackCenter = bbox.getCenter(new THREE.Vector3());
-  ground.position.set(trackCenter.x, 0, trackCenter.z);
-  const GROUND_MARGIN_M = 160; // of sky beyond the circuit on every side
-  const gsize = bbox.getSize(new THREE.Vector3());
-  const groundSize = {
-    x: gsize.x + 2 * GROUND_MARGIN_M,
-    z: gsize.z + 2 * GROUND_MARGIN_M,
-  };
-  // PlaneGeometry lies in local XY (normal +Z); after rotation.x = -PI/2
-  // local Y becomes world -Z, so the floor's DEPTH goes in scale.y —
-  // scale.z only stretches the (zero) thickness
-  groundFloor.scale.set(groundSize.x, groundSize.z, 1);
-  groundTex.repeat.set(
-    groundSize.x / theme.ground.tileM,
-    groundSize.z / theme.ground.tileM,
-  );
-  if (shadowsOn) groundFloor.receiveShadow = true;
-
-  // ---- diorama island slab under the floor (Step 2, MCPG-44)
-  // Two stacked boxes (not an ExtrudeGeometry skirt): one mesh-pair, hard
-  // voxel silhouette. A wider top lip (dirt) sits on a narrower, darker
-  // bottom (rock) — the floating-tabletop read. Step 5 (MCPG-47): the slab
-  // is a touch chunkier (22 m tall, wider lip) because the camera now fits
-  // the WHOLE island in frame, so the base rim is the intended look.
-  const ISLAND_H = 22;
-  const ISLAND_LIP = 16; // top-lip overhang beyond the floor, per side
-  const island = new THREE.Group();
-  const dirt = new THREE.Color(theme.ground.base).offsetHSL(0, 0.02, -0.14);
-  const rock = new THREE.Color(theme.ground.base).offsetHSL(0, 0.05, -0.32);
-  const topLip = new THREE.Mesh(
-    new THREE.BoxGeometry(groundSize.x + ISLAND_LIP, ISLAND_H * 0.45, groundSize.z + ISLAND_LIP),
-    new THREE.MeshLambertMaterial({ color: dirt }),
-  );
-  topLip.position.y = ISLAND_H * 0.45 / 2;
-  const bottomRock = new THREE.Mesh(
-    new THREE.BoxGeometry(groundSize.x - 8, ISLAND_H * 0.55, groundSize.z - 8),
-    new THREE.MeshLambertMaterial({ color: rock }),
-  );
-  bottomRock.position.y = -ISLAND_H * 0.55 / 2;
-  island.add(topLip, bottomRock);
-  // the floor sits at local y=-2 inside `ground`; island top just below it
-  island.position.y = -2 - ISLAND_H / 2 + 0.4;
-  ground.add(island);
-  // island bottom world Y (bottomRock underside) — used by fitBox
-  const islandBottomY = island.position.y - ISLAND_H * 0.55;
   bbox.expandByScalar(roadWidthM / 2 + 28);
   // tall props (city towers) project above the flat circuit bbox —
   // lift the top so the camera fit keeps them in frame
   const maxPropH = (def.props ?? []).reduce((m, p) => Math.max(m, p.h ?? 0), 0);
   if (maxPropH > 0) bbox.max.y += maxPropH;
-  // camera-fit box: the WHOLE island, not just the circuit (Step 5,
-  // MCPG-47). The floating slab is the diorama; if it bleeds off-frame on
-  // the far side the near side gets cut and a sky band slices the scene.
-  // Extents: floor + lip overhang in X/Z, island bottom to prop top in Y.
+
+  // camera-fit box: the WHOLE voxel island (MCPG-64). The floating island
+  // is the diorama; if it bleeds off-frame on the far side the near side
+  // gets cut and a sky band slices the scene. Extents: the scenery layer's
+  // island ellipse in X/Z (its grass top, skirt and rock keel define the
+  // silhouette), island bottom to prop top in Y.
+  const isl = scn.island;
+  // the deepest keel tips stay out of the fit (they sit center-bottom,
+  // hidden behind the front rim) — keeps the camera at diorama distance
+  const fitBottom = Math.max(isl.bottomY, -40);
   const fitBox = new THREE.Box3(
-    new THREE.Vector3(
-      trackCenter.x - (groundSize.x + ISLAND_LIP) / 2,
-      islandBottomY,
-      trackCenter.z - (groundSize.z + ISLAND_LIP) / 2,
-    ),
-    new THREE.Vector3(
-      trackCenter.x + (groundSize.x + ISLAND_LIP) / 2,
-      bbox.max.y,
-      trackCenter.z + (groundSize.z + ISLAND_LIP) / 2,
-    ),
+    new THREE.Vector3(isl.cx - isl.rx, fitBottom, isl.cz - isl.rz),
+    new THREE.Vector3(isl.cx + isl.rx, Math.max(bbox.max.y, 32), isl.cz + isl.rz),
   );
 
   function dispose() {
@@ -460,13 +382,17 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     fitBox,
     theme,
     def,
-    // exposed for scene.js (Step 2, MCPG-44): island slab + shadow setup
-    ground,
-    groundSize,
-    groundCenter: trackCenter,
-    size: gsize,
+    // voxel scenery layer (MCPG-64): island extents + per-frame animation
+    // (start-gantry lights); scene.js calls update() from its tick
+    island: scn.island,
+    sceneryStats: scn.stats,
+    sceneryUpdate: (nowMs) => scn.update(nowMs),
+    size: bbox.getSize(new THREE.Vector3()),
     // minimap source data (MCPG-31)
     map,
-    dispose,
+    dispose: () => {
+      scn.dispose();
+      dispose();
+    },
   };
 }
