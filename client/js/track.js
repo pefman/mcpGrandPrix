@@ -34,7 +34,7 @@ const ROAD_WALL_Y0 = -0.8; // grass top (scenery.js GRASS_TOP_Y)
  * Waypoints -> closed centripetal Catmull-Rom curve, uniformly rescaled so
  * getLength() matches the sim's track length (s maps linearly to curve u).
  */
-function createTrackCurve(def, lengthM) {
+export function createTrackCurve(def, lengthM) {
   const pts = def.waypoints.map(([x, z]) => new THREE.Vector3(x, 0, z));
   const curve0 = new THREE.CatmullRomCurve3(pts, true, 'centripetal', 0.5);
 
@@ -58,14 +58,18 @@ function createTrackCurve(def, lengthM) {
  * `offsetM` shifts the ribbon along the outward normal n = (-t.z, 0, t.x).
  * uvM = meters per one UV unit along the ribbon.
  */
-function flatRibbon(curve, arclen, u0, u1, { widthM, y = 0, offsetM = 0, segs = 64, uvM = 3, colors = null }) {
+export function flatRibbon(curve, arclen, u0, u1, { widthM, y = 0, offsetM = 0, segs = 64, uvM = 3, colors = null }) {
   const pos = [];
   const uv = [];
   const col = [];
   const idx = [];
   const n = new THREE.Vector3();
   for (let i = 0; i <= segs; i++) {
-    const u = u0 + ((u1 - u0) * i) / segs;
+    // The engine rescales waypoints to exactly `lengthM`, but the MEASURED
+    // rescaled length lands within ~1e-12 m of it on either side depending
+    // on the geometry. When it lands below, a full-lap arc gets u1 > 1 and
+    // getPointAt(u>1) throws (MCPG-69); clamp u back to [0,1].
+    const u = Math.min(1, Math.max(0, u0 + ((u1 - u0) * i) / segs));
     const p = curve.getPointAt(u);
     const t = curve.getTangentAt(u);
     n.set(-t.z, 0, t.x);

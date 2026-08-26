@@ -3,7 +3,7 @@
  *   1. starts the race server (5 laps, 4 scripted agents, short windows),
  *   2. starts one agent process per scripted profile,
  *   3. follows the server's event log,
- *   4. on race_complete prints final standings + where the decision log is,
+ *   4. on race_finished prints final standings + where the decision log is,
  *   5. exits 0 only if the race finished cleanly.
  */
 import { spawn } from 'node:child_process';
@@ -137,7 +137,11 @@ server.stdout.on('data', (chunk) => {
         console.log(`(or point any client at ${ev.spectateWs})`);
         startAgentsSequentially();
         agentsStarted = true;
-      } else if (ev.type === 'race_complete') {
+      } else if (ev.type === 'race_finished') {
+        // MCPG-28 renamed the end-of-race event from race_complete to
+        // race_finished (the vote window + next session follow it); the
+        // race itself is over when this lands, which is all the smoke run
+        // needs to print standings and exit 0.
         finished = true;
         clearTimeout(watchdog);
         console.log('\n=== FINAL STANDINGS ===');
@@ -168,7 +172,7 @@ server.stdout.on('data', (chunk) => {
 server.on('exit', (code) => {
   if (!finished) {
     if (code === 0) {
-      console.error(JSON.stringify({ type: 'run_error', error: 'server exited before race_complete' }));
+      console.error(JSON.stringify({ type: 'run_error', error: 'server exited before race_finished' }));
       killAll(1);
     }
   } else if (process.exitCode === undefined) {

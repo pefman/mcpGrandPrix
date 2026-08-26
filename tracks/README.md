@@ -146,3 +146,31 @@ density, gantry light-cycle timing, curb threshold per sector.
    same `validateTrackDef` so errors show inline while editing).
 5. Ship it — no engine changes needed unless you invented a *new kind* of
    feature, which is exactly what `features` flags are for negotiating.
+
+## Procedural generation (MCPG-69)
+
+Instead of hand-writing waypoints, generate candidate maps from a seed
+(deterministic: same seed + style => byte-identical file; a track is
+shareable as one integer):
+
+```sh
+node scripts/generate-track.mjs --seed 42 --style flow --out tracks/breeze-cove.json
+node scripts/generate-track.mjs --pack 20 --style auto --out tracks/   # stage a pack
+```
+
+Styles: `flow` (sweepers + long straights; coastal day / dusk lagoon),
+`technical` (hairpins + chicanes; alpine day / dusk canyon), `city`
+(chicanes + tighter ring; night neon / rain midnight), `auto` (rotates).
+`lengthM` is derived from the fitted spline (800–1300 m, multiple of
+100); `sectorLengthM = lengthM / 5`. `--id`/`--name` (or the file name
+stem in single-file mode) rename maps that get merged.
+
+Pack workflow: generate -> `npm run validate:tracks` -> `npm run visual`
+(screenshots in `.visual/`) -> pick the best 2–3 and keep them, delete
+the rest -> validate again + a 5-lap smoke race per merged map
+(`MCGP_TRACK=<id> npm run race`).
+
+Note: maps whose rescaled measured length lands a hair below `lengthM`
+would previously crash the spectator client on load (u > 1 in the road
+ribbon); the `flatRibbon` u-clamp (MCPG-69, pinned by
+test/trackRibbonClamp.test.js) makes every conformant map safe.
