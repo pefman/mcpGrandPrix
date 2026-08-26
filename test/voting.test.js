@@ -68,11 +68,13 @@ let session1;
 let session2;
 const specA = { ws: null, messages: [] };
 const specB = { ws: null, messages: [] };
+const specC = { ws: null, messages: [] }; // (re)connects INTO the open window (MCPG-57)
 let acksA = [];
 let acksB = [];
 let rejectsB = [];
 let votingMsgs = [];
 let votingSnapshots = [];
+let reconnectVoting = null; // specC's `voting` greeting (MCPG-57)
 const voteResults = []; // one per raceSeq (deduped)
 let persistAfterRace1 = null;
 
@@ -170,6 +172,13 @@ beforeAll(async () => {
     're-vote ack',
   );
 
+  // (Re)connect INTO the open window (MCPG-57): specC must be greeted with
+  // the same live vote view the snapshots carry (counts + remainingS, no
+  // winner), not the raw window info.
+  await connectSpectator(specC);
+  await waitFor(() => votingMsgs.length >= 3, 3000, 'reconnect voting message');
+  reconnectVoting = votingMsgs[votingMsgs.length - 1];
+
   await drive1; // resolves at 'finished' (before the voting phase)
   await Promise.all(race1Promises);
 
@@ -209,6 +218,7 @@ afterAll(async () => {
   hub.close();
   specA.ws.close();
   specB.ws.close();
+  specC.ws.close();
   await closeServer(server);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -251,6 +261,41 @@ describe('post-race track voting (MCPG-28)', () => {
     expect(fs.existsSync(nextTrackFile)).toBe(true);
     expect(fs.existsSync(nextTrackFile + '.tmp')).toBe(false); // rename, not copy
     expect(session2.sim.track.name).toBe('Mountain Hairpins');
+  });
+
+  it('keeps the window undecided while open (MCPG-57)', () => {
+    // The regression guard: the server used to broadcast the fallback
+    // track as a provisional `winner` in the `voting` message and EVERY
+    // open-window snapshot, so the client rendered DECIDED + 0 votes for
+    // the whole window and never showed the Vote buttons. The winner only
+    // exists at close and travels in the vote_result message.
+    expect(votingMsgs.length).toBeGreaterThanOrEqual(2);
+    expect(votingSnapshots.length).toBeGreaterThan(1); // ≥2 open-window snapshots
+    const voteBlocks = [
+      ...votingMsgs.map((m) => m), // `voting` spreads the vote block top-level
+      ...votingSnapshots.map((s) => s.vote),
+    ];
+    for (const vote of voteBlocks) {
+      expect(vote, 'vote block present').toBeTruthy();
+      expect(vote.winner, 'winner is null while the window is open').toBe(null);
+      expect(typeof vote.remainingS, 'remainingS present').toBe('number');
+      expect(vote.remainingS).toBeGreaterThanOrEqual(0);
+      expect(Array.isArray(vote.options) && vote.options.length).toBeGreaterThan(0);
+      for (const o of vote.options) expect(typeof o.votes, 'per-option votes present').toBe('number');
+    }
+  });
+
+  it('greets a (re)connecting spectator with the live vote view (MCPG-57)', () => {
+    // specC connected mid-window, after both votes had landed: its
+    // `voting` greeting must carry the running tally and the countdown —
+    // the same view as the open-window snapshots (not the raw info).
+    expect(reconnectVoting, 'reconnect voting message').toBeTruthy();
+    expect(reconnectVoting.winner).toBe(null);
+    expect(typeof reconnectVoting.remainingS).toBe('number');
+    expect(reconnectVoting.remainingS).toBeGreaterThanOrEqual(0);
+    expect(reconnectVoting.totalVotes).toBe(2);
+    expect(reconnectVoting.options.find((o) => o.id === 'mountain-hairpins').votes).toBe(2);
+    expect(reconnectVoting.options.find((o) => o.id === 'city-night').votes).toBe(0);
   });
 
   it('broadcast the vote to spectators: window msg, live snapshots, result', () => {

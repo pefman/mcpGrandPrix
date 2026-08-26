@@ -339,7 +339,9 @@ export function createUi() {
      * Post-race track vote (MCPG-28): build the option buttons once, then
      * refresh the live vote counts + countdown each snapshot. `myVote` is
      * this browser session's current pick (highlighted). When `winner` is
-     * set the buttons turn into a result list.
+     * set the buttons turn into a result list — exactly one result element
+     * per row, created once and updated in place, so repeated snapshots
+     * (10 Hz) never append duplicates (MCPG-57).
      */
     showVotePanel(vote, { myVote = null } = {}) {
       overlayVote.classList.remove('hidden');
@@ -352,18 +354,16 @@ export function createUi() {
           const row = document.createElement('div');
           row.className = 'vote-option';
           row.dataset.trackId = o.id;
-          const right = document.createElement('span');
           row.innerHTML = `<span class="vote-option-name"></span><span class="vote-option-meta"></span>`;
           row.querySelector('.vote-option-name').textContent = o.name;
           row.querySelector('.vote-option-meta').textContent = `${o.lengthM} m`;
-          row.appendChild(right);
           if (!vote.winner) {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'vote-option-btn';
             btn.textContent = 'Vote';
             btn.addEventListener('click', () => this._voteHandler && this._voteHandler(o.id));
-            right.replaceWith(btn);
+            row.appendChild(btn);
           }
           voteOptions.appendChild(row);
         }
@@ -372,17 +372,24 @@ export function createUi() {
         const o = vote.options.find((x) => x.id === row.dataset.trackId);
         if (!o) continue;
         row.classList.toggle('mine', !vote.winner && myVote === o.id);
-        const right = row.querySelector('button') || row.lastElementChild;
         if (vote.winner) {
-          if (!(right instanceof HTMLButtonElement)) {
-            const res = document.createElement('span');
+          // MCPG-57: exactly one result element per row — created once and
+          // updated in place; repeated snapshots must not append more. A
+          // row built while the window was open loses its Vote button.
+          let res = row.querySelector('.vote-option-result');
+          if (!res) {
+            res = document.createElement('span');
             res.className = 'vote-option-result';
-            row.appendChild(res);
+            const btn = row.querySelector('button');
+            if (btn) btn.replaceWith(res);
+            else row.appendChild(res);
           }
-          const res = row.lastElementChild;
-          res.textContent = vote.winner === o.id ? `winner — ${o.votes} vote${o.votes === 1 ? '' : 's'}` : `${o.votes} vote${o.votes === 1 ? '' : 's'}`;
-        } else if (right instanceof HTMLButtonElement) {
-          right.textContent = myVote === o.id ? 'Voted ✓' : 'Vote';
+          res.textContent = vote.winner === o.id
+            ? `winner — ${o.votes} vote${o.votes === 1 ? '' : 's'}`
+            : `${o.votes} vote${o.votes === 1 ? '' : 's'}`;
+        } else {
+          const btn = row.querySelector('button');
+          if (btn) btn.textContent = myVote === o.id ? 'Voted ✓' : 'Vote';
         }
       }
     },
