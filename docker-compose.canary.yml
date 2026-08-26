@@ -25,6 +25,13 @@
 # restart: "no" — a canary must never auto-restart or outlive the deploy.
 # No `build`: deploy.sh builds the image from docker-compose.yml first; the
 # canary runs that freshly built mcp-grand-prix:latest.
+#
+# The `agents` service is used ONLY by `scripts/deploy.sh --scripted-race`
+# (MCPG-70), which proves the deployed image runs a full scripted race:
+# one-shot runner that joins the four scripted agents and exits 0 only on a
+# clean finish. The normal deploy canary starts `server client` only, so its
+# mere presence here changes nothing for that path; `down --remove-orphans`
+# tears it down either way.
 services:
   server:
     image: mcp-grand-prix:latest
@@ -58,6 +65,33 @@ services:
       retries: 5
     ports:
       - "${CANARY_CLIENT_PORT:-8180}:8080"
+    restart: "no"
+
+  agents:
+    image: mcp-grand-prix:latest
+    command: ["node", "scripts/runAgents.js"]
+    # the image-level HEALTHCHECK only makes sense for the server process
+    healthcheck:
+      disable: true
+    environment:
+      MCP_URL: http://server:3080/mcp
+      SEED: "42"
+      LOG_FILE: /logs/race.jsonl
+      # Sized for the PRODUCTION-pace race this canary runs (prod env file:
+      # LAPS=10 / 30 s strategy windows ≈ 10 min wall): the base
+      # docker-compose.yml value (180000 = 3 min) fits the 5-lap dev race
+      # only. Kept below deploy.sh's SCRIPTED_RACE_TIMEOUT_S (2400) so a
+      # hung race fails here with a clear agents error, not the outer
+      # deadline.
+      WATCHDOG_MS: "1800000"
+    volumes:
+      # Same canary log volume as the server: the agents' decision-log lines
+      # and the race's team dossiers land on the volume (wiped by `down -v`),
+      # not on a throwaway container layer.
+      - canary-logs:/logs
+    depends_on:
+      server:
+        condition: service_healthy
     restart: "no"
 volumes:
   canary-logs:

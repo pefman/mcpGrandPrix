@@ -10,6 +10,17 @@
 # Usage:
 #   scripts/deploy.sh            check, then deploy/recover as needed
 #   scripts/deploy.sh --dry-run  same reads, print the planned actions, change nothing
+#   scripts/deploy.sh --scripted-race
+#        NO deploy, NO rebuild: prove the image currently deployed on the VPS
+#        runs a full scripted race end-to-end (MCPG-70). Starts the side-by-side
+#        canary on isolated ports/network (deployed image + prod env, but
+#        MIN_AGENTS=4 overriding the prod solo-play value so four scripted
+#        agents fill one grid), runs the four scripted agents against it to a
+#        clean finish, asserts the clean finish + the persisted team dossiers,
+#        then tears the canary down completely (containers, named log volume,
+#        network) and leaves no residue. Prod is never touched; its health is
+#        checked before and after as a no-regression proof.
+#   (--dry-run composes with --scripted-race: prints that plan instead.)
 #
 # Decision logic:
 #   newest   = newest `main` SHA (git ls-remote, no local clone needed)
@@ -66,6 +77,14 @@
 #   PREV_TAG         stable tag pinning the previous image before a build;
 #                    restored as `latest` on canary/promote failure
 #                    (default: mcp-grand-prix:prev)
+#   SCRIPTED_MIN_AGENTS --scripted-race: MIN_AGENTS override for the canary;
+#                    the four scripted agents need 4 grid slots, but the prod
+#                    env file sets 1 for solo play (default: 4)
+#   SCRIPTED_RACE_TIMEOUT_S
+#                    --scripted-race: max seconds to wait for the scripted
+#                    race to finish (default: 2400; the canary agents
+#                    watchdog in docker-compose.canary.yml is set lower, so a
+#                    hung race fails with a clear agents error first)
 #
 # Tools: bash + git + ssh + curl on the agent host; docker + compose on the VPS.
 # No secrets in this file or in the repo — only the agent-host key path.
@@ -83,6 +102,8 @@ HEALTH_TIMEOUT_S="${HEALTH_TIMEOUT_S:-60}"
 CANARY_HTTP_PORT="${CANARY_HTTP_PORT:-3180}"
 CANARY_CLIENT_PORT="${CANARY_CLIENT_PORT:-8180}"
 CANARY_PROJECT="${CANARY_PROJECT:-mcgp-canary}"
+SCRIPTED_MIN_AGENTS="${SCRIPTED_MIN_AGENTS:-4}"
+SCRIPTED_RACE_TIMEOUT_S="${SCRIPTED_RACE_TIMEOUT_S:-2400}"
 
 REPO_URL="https://github.com/pefman/mcpGrandPrix.git"
 # Persistent VPS stack. `agents` is deliberately NOT here: it is the one-shot
@@ -92,10 +113,12 @@ IMAGE_NAME="mcp-grand-prix:latest"
 PREV_TAG="${PREV_TAG:-mcp-grand-prix:prev}"
 
 DRY_RUN=0
+SCRIPTED_RACE=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    *) echo "usage: $0 [--dry-run]" >&2; exit 2 ;;
+    --scripted-race) SCRIPTED_RACE=1 ;;
+    *) echo "usage: $0 [--dry-run | --scripted-race]" >&2; exit 2 ;;
   esac
 done
 
@@ -194,6 +217,50 @@ canary_down() {
   vps "$(canary_compose) down -v --remove-orphans --timeout 10" || true
 }
 
+# Start the canary in --scripted-race mode: same as canary_up, but the
+# MIN_AGENTS override goes on the compose command line. Shell env beats the
+# --env-file value during ${VAR} interpolation (verified on Compose v5.x),
+# so the canary server runs the prod env file's pacing with MIN_AGENTS=4
+# while prod keeps its solo-play value. Every later compose invocation in
+# this mode MUST pass the same override: compose re-evaluates the server's
+# config when starting a dependent service, and a config drift would
+# recreate the server mid-race.
+canary_up_scripted() {
+  vps "MIN_AGENTS=$SCRIPTED_MIN_AGENTS CANARY_HTTP_PORT=$CANARY_HTTP_PORT CANARY_CLIENT_PORT=$CANARY_CLIENT_PORT $(canary_compose) up -d $COMPOSE_SERVICES"
+}
+
+# Start the canary's one-shot scripted-agent runner (the `agents` service in
+# docker-compose.canary.yml, used ONLY by --scripted-race: scripts/runAgents.js
+# joins the four scripted agents in fixed order and exits 0 only when the
+# server reports the race phase 'finished'). MIN_AGENTS is repeated so the
+# server config re-evaluation sees no drift (see canary_up_scripted).
+canary_agents_up() {
+  vps "MIN_AGENTS=$SCRIPTED_MIN_AGENTS $(canary_compose) up -d agents"
+}
+
+# Wait up to SCRIPTED_RACE_TIMEOUT_S for the canary agents container to
+# exit. It is one-shot: it exits on race finish (0) or on its own watchdog
+# / an agent error (1); the compose-level deadline is backstop only.
+wait_for_scripted_race() {
+  local deadline=$(( $(date +%s) + SCRIPTED_RACE_TIMEOUT_S ))
+  while true; do
+    local status
+    status="$(vps "docker inspect -f '{{.State.Status}}' '$CANARY_PROJECT-agents-1' 2>/dev/null || true")"
+    if [[ "$status" == "exited" || "$status" == "dead" ]]; then return 0; fi
+    if (( $(date +%s) >= deadline )); then return 1; fi
+    sleep 5
+  done
+}
+
+# Diagnostics for the CANARY stack (vps_diagnostics targets the prod
+# project): canary ps -a + last 40 log lines of its services.
+canary_diagnostics() {
+  log "VPS diagnostics (canary $CANARY_PROJECT ps -a + last 40 log lines per service):"
+  vps "docker compose -p $CANARY_PROJECT -f $VPS_APP_DIR/docker-compose.canary.yml ps -a || true"
+  vps "docker logs --tail 40 $CANARY_PROJECT-server-1 2>&1 || true"
+  vps "docker logs --tail 40 $CANARY_PROJECT-agents-1 2>&1 || true"
+}
+
 # Can the canary serve MCP at all? POST a JSON-RPC initialize to the canary
 # MCP port and require a serverInfo response. Initialize only opens an MCP
 # session — it never joins a race, so no game state is touched.
@@ -251,10 +318,155 @@ canary_fail_exit() {
   exit 1
 }
 
+# ---- scripted-race mode (MCPG-70): canary race, no deploy ------------------
+# Proves the DEPLOYED image + prod env run a full 4-scripted-agent race to a
+# clean finish on the isolated canary (own project/network/ports/volume),
+# asserts the dossier persistence, then leaves zero residue. Prod is not
+# touched at any point; its health is sampled before and after as the
+# no-regression proof.
+run_scripted_race() {
+  if ! vps "docker image inspect '$IMAGE_NAME' >/dev/null 2>&1"; then
+    err "deployed image $IMAGE_NAME not found on the VPS — run a normal deploy first"
+    exit 1
+  fi
+
+  local prod_healthy_before=0
+  if vps_health; then prod_healthy_before=1; fi
+
+  canary_down
+  log "starting scripted-race canary (project $CANARY_PROJECT, server :$CANARY_HTTP_PORT, client :$CANARY_CLIENT_PORT, MIN_AGENTS=$SCRIPTED_MIN_AGENTS, prod env pacing)"
+  if ! canary_up_scripted; then
+    canary_down
+    canary_diagnostics
+    err "scripted canary failed to start (port conflict or compose error) — prod untouched"
+    exit 1
+  fi
+  if ! wait_for_canary; then
+    canary_down
+    canary_diagnostics
+    err "scripted canary unhealthy within ${HEALTH_TIMEOUT_S}s — prod untouched"
+    exit 1
+  fi
+  log "canary healthy — starting the $SCRIPTED_MIN_AGENTS scripted agents"
+
+  if ! canary_agents_up; then
+    canary_down
+    canary_diagnostics
+    err "could not start the canary agents container — prod untouched"
+    exit 1
+  fi
+  log "waiting for the scripted race to finish (deadline ${SCRIPTED_RACE_TIMEOUT_S}s)"
+  if ! wait_for_scripted_race; then
+    canary_down
+    canary_diagnostics
+    err "scripted race did not finish within ${SCRIPTED_RACE_TIMEOUT_S}s — prod untouched"
+    exit 1
+  fi
+
+  # Assert 1 — clean finish: the agents runner exits 0 only after the server
+  # reported the race phase 'finished' (scripts/runAgents.js). Any agent
+  # error or its watchdog exits non-zero.
+  local exit_code
+  exit_code="$(vps "docker inspect -f '{{.State.ExitCode}}' '$CANARY_PROJECT-agents-1' 2>/dev/null || true")"
+  exit_code="${exit_code//[!0-9]/}"
+  if [[ "$exit_code" != "0" ]]; then
+    canary_down
+    canary_diagnostics
+    err "scripted race failed: agents container exited $exit_code — prod untouched"
+    exit 1
+  fi
+  log "race finished cleanly (agents exit 0)"
+
+  # Soft check: /state should still report the finished race while the server
+  # holds the result (RESULTS_HOLD_SECONDS, default 60). If the hold already
+  # elapsed, a fresh session is open and the phase has moved on — normal,
+  # not a failure: the deterministic clean-finish proof is the exit code.
+  local state_doc state_phase
+  state_doc="$(vps "curl -fsS -m 5 'http://localhost:$CANARY_HTTP_PORT/state' 2>/dev/null || true")"
+  state_phase="$(printf '%s' "$state_doc" | sed -n 's/.*\"phase\": *\"\([a-z_]*\)\".*/\1/p' | head -n 1)"
+  if [[ "$state_phase" == "finished" ]]; then
+    log "canary /state confirms phase 'finished'"
+  else
+    log "canary /state phase '${state_phase:-?}' (result hold may have elapsed — not a failure)"
+  fi
+
+  # Assert 2 — dossiers persisted: the canary log volume (named, wiped on
+  # teardown) must hold team_dossiers.json with this race's car entries.
+  if ! vps bash -s -- "$CANARY_PROJECT" "$SCRIPTED_MIN_AGENTS" <<'CANARY_DOSSIER'
+set -u
+project="$1"; min_agents="$2"
+cid="$(docker ps -q -f name="^${project}-server-1$" | head -n 1)"
+[ -n "$cid" ] || exit 1
+docker exec "$cid" node -e '
+  const fs = require("node:fs");
+  const d = JSON.parse(fs.readFileSync("/logs/team_dossiers.json", "utf8"));
+  const races = Object.values(d.races ?? {});
+  const cars = races.length ? Object.keys(races[races.length - 1].cars).length : 0;
+  const min = Number(process.argv[1]);
+  if (races.length < 1 || cars < min) {
+    console.error(`dossier assert failed: races=${races.length} lastRaceCars=${cars} (need >= ${min})`);
+    process.exit(1);
+  }
+  console.log(`dossier persisted: races=${races.length}, last race cars=${cars}`);
+' "$min_agents"
+CANARY_DOSSIER
+  then
+    canary_down
+    canary_diagnostics
+    err "dossier persistence assert failed (no team_dossiers.json race with $SCRIPTED_MIN_AGENTS cars) — prod untouched"
+    exit 1
+  fi
+  log "dossier assert passed"
+
+  # Full teardown: containers, named log volume and network go away together.
+  canary_down
+
+  # Acceptance: no residue — no canary containers (even stopped), no named
+  # volume, no network.
+  local residue
+  residue="$(vps "docker ps -a --filter 'name=$CANARY_PROJECT' --format '{{.Names}}'; docker volume ls --filter 'name=$CANARY_PROJECT' --format '{{.Name}}'; docker network ls --filter 'name=$CANARY_PROJECT' --format '{{.Name}}'")"
+  if [[ -n "$residue" ]]; then
+    err "canary residue remains after teardown: $residue"
+    exit 1
+  fi
+  log "canary fully torn down (no containers, volumes or networks remain)"
+
+  local prod_healthy_after=0
+  if vps_health; then prod_healthy_after=1; fi
+  if [[ $prod_healthy_after == 1 ]]; then
+    log "prod stack healthy (untouched)"
+  elif [[ $prod_healthy_before == 1 ]]; then
+    err "prod stack was healthy before the canary and is NOT after — this must not happen; investigate"
+    exit 1
+  else
+    log "WARNING: prod stack unhealthy (pre-existing state; this run never touched prod)"
+  fi
+  echo "SCRIPTED-RACE OK: clean $SCRIPTED_MIN_AGENTS-agent race on $IMAGE_NAME; canary fully torn down"
+}
+
 # ---- read state ----------------------------------------------------------
 if ! vps "true"; then
   err "cannot reach VPS ($SSH_TARGET) — check network / SSH key"
   exit 1
+fi
+
+# --scripted-race mode is a self-contained canary race: it never deploys,
+# never rebuilds and never touches prod, so it dispatches here, before any
+# deploy-state reads, and always exits on its own.
+if [[ $SCRIPTED_RACE == 1 ]]; then
+  if [[ $DRY_RUN == 1 ]]; then
+    log "DRY-RUN: --scripted-race would (no deploy, prod untouched):"
+    log "  vps: $(canary_compose) down --remove-orphans (clear any prior leftovers)"
+    log "  vps: MIN_AGENTS=$SCRIPTED_MIN_AGENTS CANARY_HTTP_PORT=$CANARY_HTTP_PORT CANARY_CLIENT_PORT=$CANARY_CLIENT_PORT $(canary_compose) up -d $COMPOSE_SERVICES (deployed image + prod env pacing)"
+    log "  vps: canary health for <= ${HEALTH_TIMEOUT_S}s (healthz :$CANARY_HTTP_PORT + $CANARY_PROJECT-server-1 running + MCP initialize + client :$CANARY_CLIENT_PORT)"
+    log "  vps: MIN_AGENTS=$SCRIPTED_MIN_AGENTS $(canary_compose) up -d agents (four scripted agents vs the canary server)"
+    log "  vps: wait for the agents container to exit (race to phase 'finished'; deadline ${SCRIPTED_RACE_TIMEOUT_S}s)"
+    log "  assert: agents exit code 0 (clean finish) + /logs/team_dossiers.json holds the race's $SCRIPTED_MIN_AGENTS car dossiers"
+    log "  vps: $(canary_compose) down -v (removes canary containers, named log volume and network)"
+    log "  vps: residue check (no containers/volumes/networks named $CANARY_PROJECT) + prod health re-check"
+    exit 0
+  fi
+  run_scripted_race
 fi
 
 new_sha="$(git ls-remote "$REPO_URL" refs/heads/main | awk '{print $1}')"
