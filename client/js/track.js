@@ -19,9 +19,16 @@ import { createRng } from './rng.js';
 import { buildScenery, resolveScenery } from './scenery.js';
 
 const CURB_MIN_RUN_M = 15;
-const CURB_WIDTH_M = 2.2;
+const CURB_WIDTH_M = 1.6; // reference curb strip width (m)
 const CURB_STRIDE_M = 4;
 const CURVATURE_SAMPLES = 240;
+
+// Vertical layering (MCPG-66, reference proportions): the road top is at
+// y = 0 (cars drive here); the island grass top sits 0.8 m below it, so
+// the road reads as a raised slab. Road markings keep small, non-overlapping
+// offsets above the road top so the perspective depth buffer never z-fights.
+const ROAD_Y = 0;
+const ROAD_WALL_Y0 = -0.8; // grass top (scenery.js GRASS_TOP_Y)
 
 /**
  * Waypoints -> closed centripetal Catmull-Rom curve, uniformly rescaled so
@@ -103,6 +110,44 @@ function ribbonOnArc(base, arclen, lengthM, s0, s1, opts) {
     b -= end;
   }
   return pieces;
+}
+
+/**
+ * Vertical edge walls of the road slab (MCPG-66): the reference's road is a
+ * raised voxel slab, so its edges read as a dark rim. Two vertical quads per
+ * segment (left/right edge), from the grass top up to the road top.
+ */
+function roadWallGeometry(curve, arclen, widthM, segs) {
+  const pos = [];
+  const nor = [];
+  const n = new THREE.Vector3();
+  const edge = (i, sign) => {
+    const u = i / segs;
+    const p = curve.getPointAt(u);
+    const t = curve.getTangentAt(u);
+    n.set(-t.z, 0, t.x);
+    return { x: p.x + n.x * sign * (widthM / 2), z: p.z + n.z * sign * (widthM / 2), nx: n.x * sign, nz: n.z * sign };
+  };
+  for (let i = 0; i <= segs; i++) {
+    for (const sign of [1, -1]) {
+      const e = edge(i, sign);
+      pos.push(e.x, ROAD_WALL_Y0, e.z, e.x, ROAD_Y, e.z);
+      nor.push(e.nx, 0, e.nz, e.nx, 0, e.nz);
+    }
+  }
+  const idx = [];
+  for (let i = 0; i < segs; i++) {
+    // vertex layout per sample: [leftLow, leftHigh, rightLow, rightHigh]
+    const B0 = i * 4;
+    const next = B0 + 4;
+    idx.push(B0 + 0, B0 + 1, next + 0, B0 + 0, next + 0, next + 1); // left wall
+    idx.push(B0 + 2, B0 + 3, next + 2, B0 + 2, next + 2, next + 3); // right wall
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setIndex(idx);
+  return geo;
 }
 
 /** Curvature (1/m) at each sample index. */
@@ -198,38 +243,48 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
   });
   const roadMesh = new THREE.Mesh(roadGeo, roadMat);
   // no receiveShadow here: at the island shadow-map's texel size the road
-  // (0.5 m above the grass tops) darkens from neighbor-cell slop — the
-  // pre-MCPG-64 renderer didn't receive on the road either
+  // (0.8 m above the grass tops) darkens from neighbor-cell slop
   group.add(roadMesh);
 
-  // ---- curbs on hard corners (outer edge, alternating red/white)
+  // road slab edge walls (MCPG-66): dark rim so the raised road reads as a
+  // solid slab from low and high angles alike (the reference's voxel slab side)
+  const roadWallMesh = new THREE.Mesh(
+    roadWallGeometry(curve, arclen, roadWidthM, ROAD_SEGS),
+    new THREE.MeshLambertMaterial({
+      color: new THREE.Color(theme.road.base).offsetHSL(0, 0, -0.16),
+      side: THREE.DoubleSide,
+    }),
+  );
+  group.add(roadWallMesh);
+
+  // ---- curbs on hard corners (BOTH edges, reference: W/2+0.8, 1.6 m wide)
   // gentle circuits (e.g. Coastal Palm) lower the threshold in their theme
   if (theme.curb) {
     const red = new THREE.Color(theme.curb.red);
     const white = new THREE.Color(theme.curb.white);
     const curbMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-    const curbOffset = roadWidthM / 2 + CURB_WIDTH_M / 2 - 0.4;
     for (const run of curbRuns(curve, arclen, lengthM, theme.curb.threshold ?? 0.021)) {
-      for (const piece of ribbonOnArc(curve, arclen, lengthM, run.s0, run.s1, {
-        widthM: CURB_WIDTH_M,
-        y: 1.0,
-        offsetM: curbOffset,
-        uvM: CURB_STRIDE_M,
-        colors: (s) => (Math.floor(s / CURB_STRIDE_M) % 2 === 0 ? red : white),
-      })) {
-        group.add(new THREE.Mesh(piece, curbMat));
+      for (const side of [-1, 1]) {
+        for (const piece of ribbonOnArc(curve, arclen, lengthM, run.s0, run.s1, {
+          widthM: CURB_WIDTH_M,
+          y: 0.05,
+          offsetM: side * (roadWidthM / 2 + CURB_WIDTH_M / 2),
+          uvM: CURB_STRIDE_M,
+          colors: (s) => (Math.floor(s / CURB_STRIDE_M) % 2 === 0 ? red : white),
+        })) {
+          group.add(new THREE.Mesh(piece, curbMat));
+        }
       }
     }
   }
 
-  // ---- start/finish checker (straddling s=0)
-  // uvM=1.6 -> exactly the 2 texture rows over the 3.2 m band, and
-  // lengthM % 1.6 === 0 so the rows align with the line
+  // ---- start/finish checker (straddling s=0) — low above the road top so
+  // it never z-fights the center dashes (0.07) or sector ticks (0.12)
   const checkerTex = makeCheckerTexture('#f4f4f4', '#15181f', 6, 2);
   const checkerWidth = Math.max(4, roadWidthM - 1.5);
   for (const piece of ribbonOnArc(curve, arclen, lengthM, lengthM - 1.6, 1.6, {
     widthM: checkerWidth,
-    y: 0.6,
+    y: 0.03,
     uvM: 1.6,
   })) {
     group.add(new THREE.Mesh(piece, new THREE.MeshLambertMaterial({ map: checkerTex })));
@@ -243,7 +298,7 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
       const s = k * sectorLen;
       const piece = flatRibbon(curve, arclen, s / arclen, (s + 0.8) / arclen, {
         widthM: roadWidthM - 1,
-        y: 0.8,
+        y: 0.12,
         segs: 1,
         uvM: 1,
       });
@@ -251,7 +306,8 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     }
   }
 
-  // ---- pit lane + boxes (inside of the start straight)
+  // ---- pit lane + boxes (inside of the start straight); the lane top sits
+  // 0.7 m above the grass, 0.1 m below the road top (reference slab heights)
   const pitOffset = -20;
   class PitLaneCurve extends THREE.Curve {
     getPoint(t, target = new THREE.Vector3()) {
@@ -262,7 +318,7 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     }
   }
   const pitCurve = new PitLaneCurve();
-  const pitGeo = flatRibbon(pitCurve, pitCurve.getLength(), 0, 1, { widthM: 5, y: 0.5, uvM: 2 });
+  const pitGeo = flatRibbon(pitCurve, pitCurve.getLength(), 0, 1, { widthM: 5, y: -0.1, uvM: 2 });
   group.add(new THREE.Mesh(pitGeo, new THREE.MeshLambertMaterial({ color: new THREE.Color(theme.pit) })));
 
   // pit boxes come from the scenery layer's garage slots (MCPG-64): every
@@ -273,14 +329,14 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
     tangent: slot.tangent.clone(),
   }));
 
-  // ---- water (a lagoon inset into the island top, just under the road)
+  // ---- water (a lagoon inset into the island top, just above the grass top)
   const waterCircles = def.water ?? [];
   if (waterCircles.length && theme.water) {
     const waterMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.water) });
     for (const w of waterCircles) {
       const m = new THREE.Mesh(new THREE.CircleGeometry(w.r, 40), waterMat);
       m.rotation.x = -Math.PI / 2;
-      m.position.set(w.x, -0.32, w.z);
+      m.position.set(w.x, -0.7, w.z);
       group.add(m);
     }
   }
@@ -321,9 +377,9 @@ export function buildTrack(scene, trackInfo, def, opts = {}) {
   // island ellipse in X/Z (its grass top, skirt and rock keel define the
   // silhouette), island bottom to prop top in Y.
   const isl = scn.island;
-  // the deepest keel tips stay out of the fit (they sit center-bottom,
-  // hidden behind the front rim) — keeps the camera at diorama distance
-  const fitBottom = Math.max(isl.bottomY, -40);
+  // The rock keel tips are buried below the ground plane (scene.js); the
+  // visible diorama bottom is the dirt skirt meeting that plane at ~-9.4.
+  const fitBottom = Math.max(isl.bottomY, -10);
   const fitBox = new THREE.Box3(
     new THREE.Vector3(isl.cx - isl.rx, fitBottom, isl.cz - isl.rz),
     new THREE.Vector3(isl.cx + isl.rx, Math.max(bbox.max.y, 32), isl.cz + isl.rz),

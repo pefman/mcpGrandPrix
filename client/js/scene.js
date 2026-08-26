@@ -1,25 +1,22 @@
 /**
- * Spectator scene (MCPG-27 rewrite).
+ * Spectator scene (MCPG-27 rewrite; crisp renderer MCPG-66).
  *
- * One fixed orthographic camera — soft 3/4 view from the south, fitted
- * once to the track's bounding box. No pan, no zoom, no follow-cam.
- * The renderer draws into a quarter-resolution buffer that CSS upscales
- * with `image-rendering: pixelated`: chunky pixels, no antialiasing.
- * Background and lights come from the track theme.
+ * One perspective camera (fov 45) at the f1-track.html reference angle —
+ * 3/4 view from the south-east, 23° elevation — fitted to the track's
+ * island, with OrbitControls (drag orbit / scroll zoom / right-drag pan,
+ * same as the reference). Full-resolution rendering: antialias on,
+ * pixel ratio min(dpr, 2), sRGB output, PCFSoftShadowMap — the pixelation
+ * pipeline (1/4-res buffer + CSS upscale) is gone (MCPG-66).
+ * Background, fog and ground plane come from the track theme; the ground
+ * plane + fog give the reference's horizon blend.
  *
- * Step 2 (MCPG-44): one soft directional shadow (chunky, on-brand) and the
- * floating diorama read. MCPG-64: the flat floor + slab became the voxel
- * grass island from client/design/reference/f1-track.html (scenery.js);
- * shadows now cover the whole island so distant scenery keeps its shadow.
- * Shadows are a single toggle (SHADOWS_ENABLED); if they moiré at the
- * 1/4-res buffer, flipping it off is the Step-5 lever.
- *
- * Step 5 (MCPG-47): the camera fits the WHOLE island (track.fitBox), so
- * the floating slab reads as a diorama on a table instead of bleeding
- * off-frame; fog is gone (the hard slab edge IS the diorama border);
- * per-frame temporaries keep the render loop allocation-free.
+ * The floating voxel diorama (island, garages, gantry, stands, walls —
+ * scenery.js, one InstancedMesh) and single soft directional shadow are
+ * unchanged from MCPG-64/44. Shadows are a single toggle
+ * (SHADOWS_ENABLED).
  */
 import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildTrack } from './track.js';
 import { createFx } from './fx.js';
 
@@ -28,17 +25,33 @@ export const CAR_COLORS = [
   '#0a84ff', '#af52de', '#ff2d55', '#e5e5ea',
 ];
 
-const PIXEL_SCALE = 4; // buffer = 1/PIXEL_SCALE of the CSS size
-const ELEVATION = THREE.MathUtils.degToRad(35);
-const FIT_MARGIN = 1.05;
-const SHADOWS_ENABLED = true; // kill-switch; keep on (verified in Step 5, MCPG-47)
+const SHADOWS_ENABLED = true; // kill-switch (verified in Step 5, MCPG-47)
 const SHADOW_MAP_SIZE = 2048;
 const PIT_TWEEN_MS = 900; // pit lane drive-in/out, client-side only (MCPG-45)
+
+// Reference camera framing (client/design/reference/f1-track.html):
+// camera (250,185,330), target (-10,-20,-75) -> unit view direction
+// 32.7° east of south, 23° elevation. Same angle + fov (45) + OrbitControls
+// settings as the reference (MCPG-66).
+const CAM_DIR = new THREE.Vector3(0.497, 0.392, 0.774).normalize();
+const CAM_TARGET_Y = -20; // reference target height (below the ground plane)
+const CAM_FIT_MARGIN = 1.04;
+const CAM_MIN_DIST = 120;
+const CAM_DAMPING = 0.06;
+const CAM_MAX_POLAR = Math.PI / 2.02; // never below the horizon
+const GROUND_Y = -9.5; // ground plane: the dirt skirt meets it (reference: -8.7, shifted with the island)
 
 // shared per-frame temporaries (Step 5, MCPG-47): label projection reuses
 // one Vector3 instead of allocating per car per frame
 const _labelVec = new THREE.Vector3();
 const _labelOut = { x: 0, y: 0 }; // reused by labelScreenPos (read immediately)
+
+/** theme hex string -> int (tolerates numbers, falls back safely). */
+function hexTheme(c, fallback) {
+  if (typeof c === 'number') return c;
+  if (typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c)) return new THREE.Color(c).getHex();
+  return fallback;
+}
 
 /**
  * Voxel F1 car (Step 3, MCPG-45): a box stack with a strong F1 silhouette,
@@ -85,36 +98,50 @@ export function makeCarMesh(color) {
 }
 
 /**
- * Fit an orthographic camera (already positioned + lookAt-ed) so the 8
- * bbox corners all land inside the frustum with a little breathing room.
+ * Fit a perspective camera (reference direction, fov 45) so all 8 bbox
+ * corners of `box` land inside the frustum. Closed form: for a corner p
+ * (relative to the target T) and camera at T + d·L, camera-space
+ * (x, y, z) = (p·X, p·Y, d − p·L) with X/Y the camera axes — so the
+ * corner is in-frame iff d ≥ p·L + |p·X|/tanH and d ≥ p·L + |p·Y|/tanV.
+ * Verified to reproduce the reference's (250,185,330) framing for the
+ * reference island (MCPG-66).
  */
-function fitCamera(camera, bbox, aspect) {
-  camera.updateMatrixWorld();
-  const inv = camera.matrixWorldInverse;
-  let maxX = 1;
-  let maxY = 1;
-  const c = new THREE.Vector3();
+function fitPerspective(camera, box, target, aspect) {
+  const L = CAM_DIR;
+  const Zc = L.clone().negate(); // camera looks along -Z
+  const Yc = new THREE.Vector3(0, 1, 0).addScaledVector(L, -L.y).normalize();
+  const Xc = new THREE.Vector3().crossVectors(Yc, Zc);
+  const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const tanH = tanV * aspect;
+  let d = 0;
+  const p = new THREE.Vector3();
   for (let i = 0; i < 8; i++) {
-    c.set(
-      i & 1 ? bbox.max.x : bbox.min.x,
-      i & 2 ? bbox.max.y : bbox.min.y,
-      i & 4 ? bbox.max.z : bbox.min.z,
-    ).applyMatrix4(inv);
-    maxX = Math.max(maxX, Math.abs(c.x));
-    maxY = Math.max(maxY, Math.abs(c.y));
+    p.set(
+      i & 1 ? box.max.x : box.min.x,
+      i & 2 ? box.max.y : box.min.y,
+      i & 4 ? box.max.z : box.min.z,
+    ).sub(target);
+    const pl = p.dot(L);
+    d = Math.max(d, pl + Math.abs(p.dot(Xc)) / tanH, pl + Math.abs(p.dot(Yc)) / tanV);
   }
-  const halfH = Math.max(maxY, maxX / aspect) * FIT_MARGIN;
-  const halfW = halfH * aspect;
-  camera.left = -halfW;
-  camera.right = halfW;
-  camera.top = halfH;
-  camera.bottom = -halfH;
+  d = Math.max(d * CAM_FIT_MARGIN, CAM_MIN_DIST);
+  // near = 2 keeps the 24-bit depth buffer fine enough that the centimetre-
+  // scale road markings (checker 0.03 / dashes 0.07 / ticks 0.12, track.js)
+  // can't z-fight at any zoom level
+  camera.near = 2;
+  camera.aspect = aspect;
   camera.updateProjectionMatrix();
+  camera.position.copy(target).addScaledVector(L, d);
+  return d;
 }
 
 export function createSpectatorScene(canvas, trackInfo, def) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(1);
+  // Crisp full-resolution renderer, per the f1-track.html reference
+  // (MCPG-66): antialias on, pixel ratio capped at 2, sRGB output,
+  // PCFSoftShadowMap. (The old 1/4-res pixelated buffer is gone.)
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const theme = def.theme;
   const scene = new THREE.Scene();
@@ -139,8 +166,28 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   const center = track.bbox.getCenter(new THREE.Vector3());
   const fit = track.fitBox;
   const fitSize = fit.getSize(new THREE.Vector3());
+  const island = track.island;
+  const islandW = 2 * Math.max(island.rx, island.rz);
 
-  // soft chunky shadows: props + voxels cast, road and island tops receive —
+  // reference horizon blend (MCPG-66): a large ground plane under the
+  // island (the dirt skirt meets it, the rock keel is buried below) and
+  // sky-colored fog that fades the plane's far edge into the background.
+  // Colors derive from the theme so every map keeps its own mood.
+  const groundSize = islandW * 5.6;
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(groundSize, groundSize),
+    new THREE.MeshLambertMaterial({
+      color: new THREE.Color(hexTheme(theme.ground.base, 0x58b649)).offsetHSL(0, -0.32, -0.21),
+    }),
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = GROUND_Y;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  const fogFar = islandW * 5.1;
+  scene.fog = new THREE.Fog(new THREE.Color(theme.sky), islandW * 1.9, fogFar);
+
+  // soft shadows: props + voxels cast, road and island tops receive —
   // the shadow frustum covers the whole island so distant scenery keeps its
   // shadow too
   if (SHADOWS_ENABLED) {
@@ -150,13 +197,13 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     // footprint of the island — include object height or the shadow
     // frustum edge cuts a visible seam across the ground (MCPG-64)
     const spread = Math.max(fitSize.x, fitSize.z) / 2 + 60 + fitSize.y * 0.5;
-    sun.position.set(center.x + spread * 0.45, 380, center.z + spread * 0.55);
+    sun.position.set(center.x + spread * 0.5, center.y + spread * 1.1, center.z + spread * 0.65);
     sun.target.position.copy(center);
     scene.add(sun.target);
     const shadow = sun.shadow;
     shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     shadow.camera.near = 1;
-    shadow.camera.far = 1500;
+    shadow.camera.far = spread * 3 + 300;
     shadow.camera.left = -spread;
     shadow.camera.right = spread;
     shadow.camera.top = spread;
@@ -166,23 +213,23 @@ export function createSpectatorScene(canvas, trackInfo, def) {
                               // chunky axis-aligned boxes (Step 5, MCPG-47)
   }
 
-  // fixed camera: from the south (+z), elevated, aimed at the track center
-  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 10000);
-  const circuitSize = track.bbox.getSize(new THREE.Vector3());
-  const distance = (circuitSize.x + circuitSize.z) * 0.75 + 400;
-  // No fog (Step 5, MCPG-47): the ground is a finite island slab, and its
-  // hard edge against the sky is the intended diorama border — foging it
-  // would just blur the tabletop's far rim.
-  camera.position.set(
-    center.x,
-    center.y + distance * Math.sin(ELEVATION),
-    center.z + distance * Math.cos(ELEVATION),
-  );
-  camera.lookAt(center);
-  // near=10 (the track is ~500+ m away) keeps depth precision fine enough
-  // that the centimetre-scale road overlays can't z-fight
-  camera.near = 10;
-  camera.far = distance + circuitSize.length() * 1.5 + 1000;
+  // perspective camera at the reference angle, fitted to the whole island
+  // (MCPG-66); OrbitControls give the reference's orbit/zoom/pan feel.
+  // The target sits below the island (reference y = -20) so the ground
+  // plane fills the lower frame and the island reads as a tabletop.
+  const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 10000);
+  const target = new THREE.Vector3(island.cx, CAM_TARGET_Y, island.cz);
+  const fitDist = fitPerspective(camera, fit, target, window.innerWidth / window.innerHeight);
+  camera.far = fitDist + groundSize + 500;
+  camera.updateProjectionMatrix();
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.copy(target);
+  controls.enableDamping = true;
+  controls.dampingFactor = CAM_DAMPING;
+  controls.minDistance = Math.max(40, fitDist * 0.12);
+  controls.maxDistance = fitDist * 1.8;
+  controls.maxPolarAngle = CAM_MAX_POLAR;
 
   const cars = new Map(); // carId -> { group, color, liveryParts, state, name, ... }
   const _lerp = new THREE.Vector3(); // scratch for the pit-transition tween
@@ -380,21 +427,20 @@ export function createSpectatorScene(canvas, trackInfo, def) {
   }
 
   function resize() {
+    // full-resolution buffer (MCPG-66: the 1/4-res pixelated upscale is
+    // gone); the canvas is CSS-fixed to the window, so only the aspect
+    // changes on resize — the user's orbit state is never reset
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const bw = Math.max(1, Math.round(w / PIXEL_SCALE));
-    const bh = Math.max(1, Math.round(h / PIXEL_SCALE));
-    renderer.setSize(bw, bh, false); // buffer size; CSS stretches the canvas
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
-    // fit the WHOLE island, not just the circuit (Step 5, MCPG-47): the
-    // floating slab stays in frame on every side, no sky band slicing it
-    fitCamera(camera, track.fitBox, w / h);
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
   }
   resize();
   window.addEventListener('resize', resize);
 
   function tick(nowMs) {
+    controls.update(); // orbit damping (MCPG-66)
     fx.update(nowMs);
     track.sceneryUpdate(nowMs); // voxel scenery animation (gantry lights, MCPG-64)
   }
@@ -403,6 +449,7 @@ export function createSpectatorScene(canvas, trackInfo, def) {
     renderer,
     scene,
     camera,
+    controls,
     track,
     carIds: () => [...cars.keys()],
     addCar,
@@ -434,6 +481,7 @@ export function createSpectatorScene(canvas, trackInfo, def) {
       window.removeEventListener('resize', resize);
       track.dispose();
       fx.dispose();
+      controls.dispose();
       renderer.dispose();
     },
   };

@@ -86,7 +86,12 @@
   <div id="labels"></div>
 
   <script type="importmap">
-    { "imports": { "three": "./vendor/three.module.js" } }
+    {
+      "imports": {
+        "three": "./vendor/three.module.js",
+        "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"
+      }
+    }
   </script>
   <script type="module" src="./js/main.js"></script>
 </body>

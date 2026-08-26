@@ -51,7 +51,7 @@ DRS boards at fixed fractions, floodlights at island corners).
 | `island.marginM` | number | grass island margin beyond the circuit bbox, per side |
 | `garages` | number | pit garage count (2–12); the pit boxes cars tween to follow the garage slots |
 | `stands[]` | `{ atS, arcM?, side? }` | curved grandstand centered at `atS` meters along the lap, `arcM` long; `side` ±1 picks the track side, omit to auto-place outside the circuit |
-| `tireWalls[]` | `{ atS, count? }` | stacked tire wall outside the corner at `atS`; omit the list for auto apex detection |
+| `tireWalls[]` | `{ atS, count? }` | stacked tire wall inside the corner at `atS` (reference rule); omit the list for auto apex detection |
 | `drs[]` | `{ atS, side? }` | DRS board at `atS` |
 | `floodlights[]` | `{ x, z }` | floodlight tower at world coords |
 | `scatterExclusions[]` | `[x, z, r]` | circles the prop scatter must avoid (pit complex, stands, …); the legacy `scatter.exclusions` field is honored too |
