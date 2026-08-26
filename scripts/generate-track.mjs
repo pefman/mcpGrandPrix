@@ -28,6 +28,7 @@
  * USAGE
  *   node scripts/generate-track.mjs --seed 42 --style flow --out tracks/breeze-cove.json
  *   node scripts/generate-track.mjs --seed 42 --style flow --out tracks/ --id breeze-cove --name "Breeze Cove"
+ *   node scripts/generate-track.mjs --seed 7 --style city --palette rain-midnight --out tracks/
  *   node scripts/generate-track.mjs --pack 20 --style auto --out tracks/   # stage a pack
  *
  * WORKFLOW (pack -> ship)
@@ -87,6 +88,7 @@ const STYLES = {
         water: '#2e6f8f', fxAccent: '#ffb35c',
       },
     ],
+    paletteNames: ['coastal-day', 'lagoon-dusk'],
     nameAdj: ['Breeze', 'Lagoon', 'Palm', 'Tide', 'Meadow', 'Drift'],
     nameNoun: ['Bay', 'Cove', 'Meadows', 'Shoreline', 'Gardens', 'Ridge'],
   },
@@ -121,6 +123,7 @@ const STYLES = {
         fxAccent: '#ffd166',
       },
     ],
+    paletteNames: ['alpine-day', 'canyon-dusk'],
     nameAdj: ['Aiguille', 'Canyon', 'Serpent', 'Granite', 'Switchback', 'Col de'],
     nameNoun: ['Pass', 'Gorge', 'Ridge', 'Saddle', 'Col', 'Ravine'],
   },
@@ -156,6 +159,7 @@ const STYLES = {
         water: '#27405e', fxAccent: '#7de8ff',
       },
     ],
+    paletteNames: ['neon-night', 'rain-midnight'],
     nameAdj: ['Neon', 'Metro', 'Midnight', 'Riverside', 'Grand', 'Static'],
     nameNoun: ['Circuit', 'Metro', 'Boulevard', 'Spurs', 'Grid', 'Exchange'],
   },
@@ -317,7 +321,7 @@ function countHotRuns(curv, arclen, threshold, minRunM) {
  * Generate one track definition for a seed + style.
  * `overrides` = { id?, name? } for maps that get merged (friendly ids).
  */
-function generate(seed, styleName, overrides = {}) {
+function generate(seed, styleName, overrides = {}, paletteIndex = null) {
   const style = STYLES[styleName];
   const rng = createRng(seed);
 
@@ -378,7 +382,13 @@ function generate(seed, styleName, overrides = {}) {
     props.push(prop);
   }
 
-  const palette = rng.pick(style.palettes);
+  // Draw once unconditionally so the downstream RNG stream (props, scatter
+  // seed, generated name) is identical whether or not a palette is forced;
+  // only the chosen palette changes. Keeps a --palette run diff-able against
+  // its auto-pick twin.
+  const autoPalette = rng.pick(style.palettes);
+  const palette = paletteIndex != null ? style.palettes[paletteIndex] : autoPalette;
+
   const name = overrides.name ?? `${rng.pick(style.nameAdj)} ${rng.pick(style.nameNoun)}`;
 
   const def = {
@@ -412,7 +422,7 @@ function generate(seed, styleName, overrides = {}) {
 function fail(msg) {
   console.error(`generate-track: ${msg}`);
   console.error('usage: node scripts/generate-track.mjs [--seed N] [--style flow|technical|city|auto] ' +
-    '[--out <file.json|dir>] [--pack K] [--id ID] [--name NAME]');
+    '[--out <file.json|dir>] [--pack K] [--id ID] [--name NAME] [--palette NAME|IDX]');
   process.exit(1);
 }
 
@@ -431,12 +441,28 @@ const outPath = path.resolve(getArg('--out') ?? 'out');
 const pack = Number(getArg('--pack') ?? '1');
 const idOverride = getArg('--id');
 const nameOverride = getArg('--name');
+const paletteArg = getArg('--palette');
 
 if (!Number.isInteger(seed) || seed < 0) fail(`--seed must be a non-negative integer (got ${getArg('--seed')})`);
 if (pack < 1 || !Number.isInteger(pack)) fail(`--pack must be a positive integer (got ${getArg('--pack')})`);
 if (styleArg !== 'auto' && !(styleArg in STYLES)) fail(`unknown --style "${styleArg}" (known: ${ALL_STYLES.join(', ')}, auto)`);
 if (idOverride !== undefined && !/^[a-z0-9-]+$/.test(idOverride)) fail(`--id must match /^[a-z0-9-]+$/ (got "${idOverride}")`);
 if (pack > 1 && (idOverride !== undefined || nameOverride !== undefined)) fail('--id/--name apply to single-map mode only (--pack 1)');
+
+// --palette selects one of a style's curated palettes (by name or index)
+// instead of the seeded auto-pick. Single-map only; needs a concrete style.
+let paletteIndex = null;
+if (paletteArg !== undefined) {
+  if (pack !== 1) fail('--palette applies to single-map mode only (--pack 1)');
+  if (styleArg === 'auto') fail('--palette needs a concrete --style (not auto)');
+  const s = STYLES[styleArg];
+  const numeric = /^\d+$/.test(paletteArg) ? Number(paletteArg) : -1;
+  const idx = numeric >= 0 ? numeric : s.paletteNames.indexOf(paletteArg);
+  if (idx < 0 || idx >= s.palettes.length) {
+    fail(`--palette "${paletteArg}" not found for --style ${styleArg} (known: ${s.paletteNames.join(', ')})`);
+  }
+  paletteIndex = idx;
+}
 
 const singleFile = pack === 1 && outPath.endsWith('.json');
 const outDir = singleFile ? path.dirname(outPath) : outPath;
@@ -457,7 +483,7 @@ for (let k = 0; k < pack; k++) {
     console.log(`FAIL: track id "${overrides.id}" must match /^[a-z0-9-]+$/`);
     continue;
   }
-  const { def, stats } = generate(s, styleName, overrides);
+  const { def, stats } = generate(s, styleName, overrides, paletteIndex);
   const { ok, errors, warnings } = validateTrackDef(def);
   const id = def.id;
   if (!ok) {
