@@ -23,7 +23,7 @@ import { CONFIG } from '../config.js';
 import { DecisionLogger } from '../logging/decisionLogger.js';
 import { RaceSession } from './raceSession.js';
 import { Track } from '../track.js';
-import { getTrackDef, loadTrackDefs, persistNextTrack, readNextTrack } from '../tracks.js';
+import { DEFAULT_TRACK_ID, getTrackDef, loadTrackDefs, persistNextTrack, readNextTrack } from '../tracks.js';
 import { applyRace, readSeason, saveSeason, rankSeason } from '../season.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -78,7 +78,7 @@ export class RaceOrchestrator {
     // restart between races cannot lose the decision.
     this.voteWindowSeconds = voteWindowSeconds;
     this.nextTrackFile = nextTrackFile ?? null;
-    this.nextTrackId = this._initialTrackId();
+    this.nextTrackId = this._envTrackId(); // env-selected seed for session 1
     this._votes = null; // current window's { sessionId -> trackId }
     this.votingInfo = null; // what the snapshot broadcasts while voting
     this._voteDeadline = 0; // wall time the current window closes/closed
@@ -171,9 +171,12 @@ export class RaceOrchestrator {
   /** Tracks offered in the window: every registry id except the one just raced. */
   voteWindowOptions() {
     const racedId = this.session ? this.session.sim.track.id : null;
+    // Only the identity trio the vote panel renders (MCPG-63: the full def
+    // — palette included — belongs to GET /tracks/<id>.json, not to every
+    // snapshot broadcast).
     return loadTrackDefs()
       .filter((d) => d.id !== racedId)
-      .map((d) => ({ id: d.id, name: d.name, lengthM: d.lengthM, theme: d.theme }));
+      .map((d) => ({ id: d.id, name: d.name, lengthM: d.lengthM }));
   }
 
   /**
@@ -192,12 +195,6 @@ export class RaceOrchestrator {
     const totalVotes = Object.keys(this._votes).length;
     this.logger.log({ type: 'track_vote', raceId: this.raceId, raceSeq: this.raceSeq, sessionId, trackId, totalVotes });
     return { accepted: true, trackId, totalVotes };
-  }
-
-  /** Track id for session 1: the env MCGP_TRACK (seed for the first race). */
-  _initialTrackId() {
-    const env = (process.env.MCGP_TRACK || 'coastal-palm').trim();
-    return getTrackDef(env) ? env : 'coastal-palm';
   }
 
   /** Fallback pick when no vote came in: one step forward in the registry. */
@@ -512,7 +509,7 @@ export class RaceOrchestrator {
 
   /** The Track instance the next session will race (MCPG-28: vote-decided). */
   _nextTrackInstance() {
-    const id = this.raceSeq === 0 ? this._initialTrackId() : this._trackIdForNextSession();
+    const id = this.raceSeq === 0 ? this._envTrackId() : this._trackIdForNextSession();
     const def = getTrackDef(id);
     return new Track({ id: def.id, name: def.name, lengthM: def.lengthM, sectorLengthM: def.sectorLengthM });
   }
@@ -521,8 +518,13 @@ export class RaceOrchestrator {
   _trackIdForNextSession() {
     const persisted = readNextTrack(this.nextTrackFile);
     if (persisted) return persisted.trackId;
-    const env = (process.env.MCGP_TRACK || 'coastal-palm').trim();
-    return getTrackDef(env) ? env : 'coastal-palm';
+    return this._envTrackId();
+  }
+
+  /** The env-selected track id, or the registry default when unset/unknown. */
+  _envTrackId() {
+    const env = (process.env.MCGP_TRACK || DEFAULT_TRACK_ID).trim();
+    return getTrackDef(env) ? env : DEFAULT_TRACK_ID;
   }
 
   async _host() {

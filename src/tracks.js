@@ -6,6 +6,10 @@
  * the spectator client fetches the full definition (waypoints, theme, props)
  * from `GET /tracks/<id>.json` and renders the scene.
  *
+ * Every file is checked against the track contract (MCPG-63, see
+ * tracks/README.md) when the registry loads: violations fail fast at
+ * startup, unknown fields/types are stripped with a logged warning.
+ *
  * The active track is chosen with the `MCGP_TRACK` env var (track id).
  * Unknown values fail fast at startup — a typo must not silently start a
  * race on the wrong circuit.
@@ -14,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Track } from './track.js';
+import { sanitizeTrackDef, validateTrackDef } from './trackContract.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const TRACKS_DIR = path.resolve(here, '..', 'tracks');
@@ -24,21 +29,23 @@ export const DEFAULT_TRACK_ID = 'coastal-palm';
 export const NEXT_TRACK_FILE =
   process.env.MCGP_NEXT_TRACK_FILE || '/logs/next_track.json';
 
-function validateDef(def, file) {
-  const err = (msg) => new Error(`tracks/${file}: ${msg}`);
-  if (typeof def.id !== 'string' || !/^[a-z0-9-]+$/.test(def.id)) throw err('bad "id"');
-  if (typeof def.name !== 'string' || !def.name) throw err('bad "name"');
-  if (!Number.isFinite(def.lengthM) || def.lengthM <= 0) throw err('bad "lengthM"');
-  if (!Number.isFinite(def.sectorLengthM) || def.sectorLengthM <= 0) throw err('bad "sectorLengthM"');
-  if (def.lengthM % def.sectorLengthM !== 0) throw err('sectorLengthM must divide lengthM');
-  if (!Array.isArray(def.waypoints) || def.waypoints.length < 6) throw err('needs >= 6 waypoints');
-  for (const wp of def.waypoints) {
-    if (!Array.isArray(wp) || wp.length !== 2 || !wp.every((n) => Number.isFinite(n))) {
-      throw err('bad waypoint (expected [x, z] numbers)');
-    }
+/**
+ * Validate + sanitize one raw map file against the track contract (MCPG-63).
+ * Contract violations abort startup with every violation of the file listed;
+ * unknown fields/types are stripped with a logged warning (forward compat).
+ */
+function checkedDef(raw, file) {
+  const check = validateTrackDef(raw);
+  if (!check.ok) {
+    throw new Error(
+      `tracks/${file}: invalid track contract\n  ${[...check.errors].join('\n  ')}`,
+    );
   }
-  if (def.roadWidthM != null && (!Number.isFinite(def.roadWidthM) || def.roadWidthM <= 0)) {
-    throw err('bad "roadWidthM"');
+  for (const w of check.warnings) console.warn(`tracks/${file}: warning: ${w}`);
+  const def = sanitizeTrackDef(raw);
+  // identity must match the file name so GET /tracks/<id>.json stays honest
+  if (def.id !== file.replace(/\.json$/, '')) {
+    throw new Error(`tracks/${file}: "id" (${def.id}) must equal the file name stem`);
   }
   return def;
 }
@@ -53,7 +60,13 @@ export function loadTrackDefs() {
     .filter((f) => f.endsWith('.json'))
     .sort()
     .map((f) => {
-      const def = validateDef(JSON.parse(fs.readFileSync(path.join(TRACKS_DIR, f), 'utf8')), f);
+      let raw;
+      try {
+        raw = JSON.parse(fs.readFileSync(path.join(TRACKS_DIR, f), 'utf8'));
+      } catch (e) {
+        throw new Error(`tracks/${f}: not valid JSON (${e.message})`);
+      }
+      const def = checkedDef(raw, f);
       def.__file = f; // remembered for GET /tracks/<id>.json (http.js)
       return def;
     });
