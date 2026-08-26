@@ -1,0 +1,196 @@
+{
+  "id": "night",
+  "name": "Neon Night GP",
+  "lengthM": 980,
+  "sectorLengthM": 196,
+  "roadWidthM": 13,
+  "waypoints": [
+    [
+      -169.6,
+      -46.8
+    ],
+    [
+      -163.5,
+      -89.1
+    ],
+    [
+      -109.1,
+      -101.2
+    ],
+    [
+      -24.3,
+      -95.2
+    ],
+    [
+      72.5,
+      -97.6
+    ],
+    [
+      157.2,
+      -92.8
+    ],
+    [
+      181.4,
+      -46.8
+    ],
+    [
+      175.4,
+      1.6
+    ],
+    [
+      133,
+      19.8
+    ],
+    [
+      139.1,
+      56.1
+    ],
+    [
+      96.7,
+      86.4
+    ],
+    [
+      24.1,
+      74.3
+    ],
+    [
+      -48.6,
+      92.4
+    ],
+    [
+      -115.1,
+      80.3
+    ],
+    [
+      -163.5,
+      38
+    ],
+    [
+      -175.7,
+      -4.4
+    ]
+  ],
+  "pitLane": {
+    "fromFrac": 0.09,
+    "toFrac": 0.3,
+    "offsetM": 13,
+    "widthM": 8.5,
+    "boxSpacing": 20,
+    "accent": "#c26bff"
+  },
+  "theme": {
+    "sky": "#0d1430",
+    "ground": {
+      "base": "#2a3145",
+      "spot": "#262c40",
+      "patch": "#303752"
+    },
+    "road": {
+      "base": "#2e3342",
+      "spot": "#2a2f3d"
+    },
+    "curb": {
+      "red": "#ff3348",
+      "white": "#f7f9ff",
+      "threshold": 0.015
+    },
+    "pit": "#3a4154",
+    "barriers": true,
+    "edgeLines": true,
+    "ambient": {
+      "sky": "#33406e",
+      "ground": "#10131c",
+      "intensity": 0.5
+    },
+    "sun": {
+      "color": "#cdd9ff",
+      "intensity": 0.85
+    }
+  },
+  "water": [],
+  "props": [
+    {
+      "type": "grandstand",
+      "w": 64,
+      "d": 12,
+      "h": 9,
+      "x": -99.4,
+      "z": -123.5
+    },
+    {
+      "type": "floodlight",
+      "x": -184,
+      "z": -56.8
+    },
+    {
+      "type": "floodlight",
+      "x": 166.4,
+      "z": -45.4
+    },
+    {
+      "type": "floodlight",
+      "x": 111.7,
+      "z": 97.2
+    },
+    {
+      "type": "floodlight",
+      "x": -36.8,
+      "z": 106.2
+    },
+    {
+      "type": "floodlight",
+      "x": -153.7,
+      "z": 24.9
+    },
+    {
+      "type": "chandelier",
+      "x": -169,
+      "z": -61.8
+    },
+    {
+      "type": "chandelier",
+      "x": -165.6,
+      "z": -86.3
+    },
+    {
+      "type": "chandelier",
+      "x": -139.4,
+      "z": -98.7
+    },
+    {
+      "type": "chandelier",
+      "x": 176.2,
+      "z": 0.5
+    },
+    {
+      "type": "skyscraper",
+      "x": -0.1,
+      "z": 134.8,
+      "h": 26
+    },
+    {
+      "type": "skyscraper",
+      "x": -224.1,
+      "z": 13.7,
+      "h": 34
+    },
+    {
+      "type": "skyscraper",
+      "x": 223.8,
+      "z": 74.3,
+      "h": 22
+    },
+    {
+      "type": "sign",
+      "color": "#c26bff",
+      "x": -184.4,
+      "z": -78.8
+    },
+    {
+      "type": "sign",
+      "color": "#22d3ee",
+      "x": 62.7,
+      "z": 98.6
+    }
+  ]
+}

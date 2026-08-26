@@ -201,6 +201,42 @@ html, body {
   white-space: nowrap;
 }
 
+/* ---------- track style selector (v2, bottom center) ---------- */
+#track-select {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  gap: 6px;
+  background: var(--panel);
+  border: 2px solid var(--panel-border);
+  border-radius: var(--voxel-radius);
+  box-shadow: var(--voxel-shadow-sm);
+  padding: 6px 8px;
+  backdrop-filter: blur(6px);
+}
+.ts-btn {
+  font: 700 10px/1 inherit;
+  font-family: inherit;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 2px solid var(--panel-border);
+  border-radius: 0;
+  padding: 6px 9px;
+  cursor: pointer;
+}
+.ts-btn:hover { color: var(--text); border-color: rgba(255, 255, 255, 0.35); }
+.ts-btn.active {
+  color: var(--text);
+  background: rgba(255, 45, 120, 0.16);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px rgba(255, 45, 120, 0.35);
+}
+
 /* ---------- sandbox badge (bottom-right) ---------- */
 #sandbox-badge {
   position: fixed;

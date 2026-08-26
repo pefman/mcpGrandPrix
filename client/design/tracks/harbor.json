@@ -1,0 +1,195 @@
+{
+  "id": "harbor",
+  "name": "Harbor Circuit",
+  "lengthM": 1050,
+  "sectorLengthM": 210,
+  "roadWidthM": 13,
+  "waypoints": [
+    [
+      -172.7,
+      71.3
+    ],
+    [
+      -184.9,
+      -7.7
+    ],
+    [
+      -166.6,
+      -68.5
+    ],
+    [
+      -99.8,
+      -92.8
+    ],
+    [
+      -26.8,
+      -98.9
+    ],
+    [
+      70.4,
+      -101.3
+    ],
+    [
+      155.6,
+      -98.9
+    ],
+    [
+      185.9,
+      -62.4
+    ],
+    [
+      179.9,
+      -13.8
+    ],
+    [
+      143.4,
+      22.7
+    ],
+    [
+      161.6,
+      65.2
+    ],
+    [
+      119.1,
+      101.7
+    ],
+    [
+      46.1,
+      113.9
+    ],
+    [
+      -14.7,
+      83.5
+    ],
+    [
+      -75.4,
+      101.7
+    ],
+    [
+      -136.2,
+      105.4
+    ]
+  ],
+  "pitLane": {
+    "fromFrac": 0.086,
+    "toFrac": 0.33,
+    "offsetM": 14,
+    "widthM": 9,
+    "boxSpacing": 22,
+    "accent": "#ff2d78"
+  },
+  "theme": {
+    "sky": "#45b8ff",
+    "ground": {
+      "base": "#efe0bd",
+      "spot": "#e6d2ab",
+      "patch": "#dcc495"
+    },
+    "road": {
+      "base": "#3a3f4d",
+      "spot": "#353a48"
+    },
+    "curb": {
+      "red": "#ff3b30",
+      "white": "#fdf6e8",
+      "threshold": 0.014
+    },
+    "water": "#19b8c9",
+    "pit": "#8b95ad",
+    "barriers": true,
+    "ambient": {
+      "sky": "#cfeaff",
+      "ground": "#e8d9a8",
+      "intensity": 0.78
+    },
+    "sun": {
+      "color": "#fff3d6",
+      "intensity": 1
+    }
+  },
+  "water": [
+    {
+      "x": -263.9,
+      "z": -19.9,
+      "r": 63.2
+    },
+    {
+      "x": 222.4,
+      "z": -141.4,
+      "r": 31.6
+    }
+  ],
+  "props": [
+    {
+      "type": "grandstand",
+      "w": 70,
+      "d": 13,
+      "h": 9,
+      "x": -199.6,
+      "z": -53
+    },
+    {
+      "type": "lighthouse",
+      "x": -219.1,
+      "z": 14.4
+    },
+    {
+      "type": "container",
+      "x": 21.8,
+      "z": -145.1,
+      "color": "#ff5540"
+    },
+    {
+      "type": "container",
+      "x": 31.5,
+      "z": -145.1,
+      "color": "#2f7dff"
+    },
+    {
+      "type": "container",
+      "x": 26.7,
+      "z": -145.1,
+      "color": "#ffc53d",
+      "stack": 2
+    },
+    {
+      "type": "container",
+      "x": 46.1,
+      "z": -147.5,
+      "color": "#28c76f"
+    },
+    {
+      "type": "boat",
+      "x": -245.6,
+      "z": -44.2
+    },
+    {
+      "type": "boat",
+      "x": -227.4,
+      "z": 4.4
+    },
+    {
+      "type": "boat",
+      "x": 222.4,
+      "z": -137.8
+    },
+    {
+      "type": "sign",
+      "color": "#ff2d55",
+      "x": -199.3,
+      "z": 35.1
+    },
+    {
+      "type": "sign",
+      "color": "#0a84ff",
+      "x": 154.6,
+      "z": 99
+    }
+  ],
+  "scatter": {
+    "type": "palm",
+    "count": 16,
+    "seed": 21,
+    "minOffsetM": 16
+  }
+}

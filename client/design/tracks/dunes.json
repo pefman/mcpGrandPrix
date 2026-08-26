@@ -1,0 +1,167 @@
+{
+  "id": "dunes",
+  "name": "Dune Grand Prix",
+  "lengthM": 1100,
+  "sectorLengthM": 220,
+  "roadWidthM": 14,
+  "waypoints": [
+    [
+      -194.2,
+      -25.2
+    ],
+    [
+      -187.7,
+      -77.2
+    ],
+    [
+      -142.2,
+      -105.9
+    ],
+    [
+      -51.1,
+      -90.2
+    ],
+    [
+      40.1,
+      -111.1
+    ],
+    [
+      131.2,
+      -103.3
+    ],
+    [
+      196.2,
+      -70.7
+    ],
+    [
+      202.7,
+      -12.2
+    ],
+    [
+      183.2,
+      52.9
+    ],
+    [
+      124.7,
+      85.5
+    ],
+    [
+      59.6,
+      59.4
+    ],
+    [
+      -5.5,
+      79
+    ],
+    [
+      -70.6,
+      118
+    ],
+    [
+      -148.7,
+      105
+    ],
+    [
+      -187.7,
+      52.9
+    ]
+  ],
+  "pitLane": {
+    "fromFrac": 0.11,
+    "toFrac": 0.33,
+    "offsetM": 15,
+    "widthM": 9,
+    "boxSpacing": 24,
+    "accent": "#e8842c"
+  },
+  "theme": {
+    "sky": "#7ecdf8",
+    "ground": {
+      "base": "#f2c76e",
+      "spot": "#e8b855",
+      "patch": "#dcaa45"
+    },
+    "road": {
+      "base": "#4a4640",
+      "spot": "#44403a"
+    },
+    "curb": {
+      "red": "#e8362e",
+      "white": "#fdf6e8",
+      "threshold": 0.013
+    },
+    "pit": "#a09a8c",
+    "barriers": true,
+    "salt": "#e9e2cc",
+    "ambient": {
+      "sky": "#eaf6ff",
+      "ground": "#f0d492",
+      "intensity": 0.82
+    },
+    "sun": {
+      "color": "#fff0c0",
+      "intensity": 1.05
+    }
+  },
+  "water": [
+    {
+      "x": 14,
+      "z": -25.2,
+      "r": 39,
+      "salt": true
+    }
+  ],
+  "props": [
+    {
+      "type": "grandstand",
+      "w": 66,
+      "d": 12,
+      "h": 8,
+      "x": -116.1,
+      "z": -128.7
+    },
+    {
+      "type": "pyramid",
+      "x": -12,
+      "z": -181.4
+    },
+    {
+      "type": "dune",
+      "x": -220.3,
+      "z": 79
+    },
+    {
+      "type": "dune",
+      "x": 157.2,
+      "z": 144
+    },
+    {
+      "type": "dune",
+      "x": 241.8,
+      "z": 26.9
+    },
+    {
+      "type": "dune",
+      "x": -155.2,
+      "z": -155.3
+    },
+    {
+      "type": "sign",
+      "color": "#ff9500",
+      "x": -197.2,
+      "z": -94.5
+    },
+    {
+      "type": "sign",
+      "color": "#ff2d55",
+      "x": 35.2,
+      "z": 81.5
+    }
+  ],
+  "scatter": {
+    "type": "cactus",
+    "count": 26,
+    "seed": 33,
+    "minOffsetM": 17
+  }
+}

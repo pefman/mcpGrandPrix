@@ -1,0 +1,140 @@
+{
+  "id": "alpine",
+  "name": "Alpine Pass",
+  "lengthM": 1000,
+  "sectorLengthM": 200,
+  "roadWidthM": 12,
+  "waypoints": [
+    [
+      -132.3,
+      -79
+    ],
+    [
+      -162.4,
+      -6.6
+    ],
+    [
+      -126.2,
+      65.8
+    ],
+    [
+      -53.8,
+      90
+    ],
+    [
+      0.6,
+      10.3
+    ],
+    [
+      67,
+      84
+    ],
+    [
+      145.5,
+      53.8
+    ],
+    [
+      169.6,
+      -12.6
+    ],
+    [
+      127.3,
+      -73
+    ],
+    [
+      0.6,
+      -11.4
+    ],
+    [
+      -65.8,
+      -91.1
+    ]
+  ],
+  "pitLane": {
+    "fromFrac": 0.43,
+    "toFrac": 0.56,
+    "offsetM": -13,
+    "widthM": 8.5,
+    "boxSpacing": 20,
+    "accent": "#3a86ff"
+  },
+  "theme": {
+    "sky": "#8fd0f5",
+    "ground": {
+      "base": "#eef3fa",
+      "spot": "#e2eaf5",
+      "patch": "#d5e0ef"
+    },
+    "road": {
+      "base": "#3c4250",
+      "spot": "#363c4a"
+    },
+    "curb": {
+      "red": "#e8362e",
+      "white": "#ffffff",
+      "threshold": 0.016
+    },
+    "water": "#2f8fe8",
+    "pit": "#8f99ae",
+    "barriers": true,
+    "ambient": {
+      "sky": "#e8f4ff",
+      "ground": "#cfdcec",
+      "intensity": 0.8
+    },
+    "sun": {
+      "color": "#fffaf0",
+      "intensity": 0.95
+    }
+  },
+  "water": [
+    {
+      "x": -45.3,
+      "z": -3,
+      "r": 33.8
+    }
+  ],
+  "props": [
+    {
+      "type": "grandstand",
+      "w": 56,
+      "d": 11,
+      "h": 8,
+      "x": 42,
+      "z": 91.9
+    },
+    {
+      "type": "peak",
+      "x": 0.6,
+      "z": 156.4
+    },
+    {
+      "type": "peak",
+      "x": -180.5,
+      "z": 114.1
+    },
+    {
+      "type": "peak",
+      "x": 181.7,
+      "z": 114.1
+    },
+    {
+      "type": "sign",
+      "color": "#3a86ff",
+      "x": -144.7,
+      "z": 8.2
+    },
+    {
+      "type": "sign",
+      "color": "#ffd60a",
+      "x": 17.5,
+      "z": -29.4
+    }
+  ],
+  "scatter": {
+    "type": "spruce",
+    "count": 22,
+    "seed": 44,
+    "minOffsetM": 15
+  }
+}

@@ -35,6 +35,9 @@ const EMBEDDED_TRACK = {
   lengthM: 1000,
   sectorLengthM: 200,
   roadWidthM: 13,
+  // synthesized pit lane (the v1 track JSON predates the pitLane field):
+  // same span/side as the original hardcoded pit slab (s 15-95, offset -20)
+  pitLane: { fromFrac: 0.018, toFrac: 0.098, offsetM: -20, widthM: 9, boxSpacing: 22, accent: '#0a84ff' },
   waypoints: [
     [30, 148], [120, 146], [190, 118], [218, 45],
     [198, -35], [140, -95], [60, -128], [-10, -118],
@@ -239,6 +242,100 @@ const PAL = {
 };
 
 /* =========================================================================
+ * 3b. v2: five track styles + theme-driven palettes
+ * ======================================================================= */
+
+// The five design-track styles (new files under client/design/tracks/) plus
+// the original coastal-palm kept as the v1 reference. Waypoints/water/props
+// in the new files are pre-scaled to their lengthM, so the builder's
+// rescale factor comes out ~1.0 for them.
+const TRACK_LIST = [
+  { id: 'harbor', name: 'Harbor Circuit', url: new URL('./tracks/harbor.json', import.meta.url).href },
+  { id: 'dunes', name: 'Dune Grand Prix', url: new URL('./tracks/dunes.json', import.meta.url).href },
+  { id: 'alpine', name: 'Alpine Pass', url: new URL('./tracks/alpine.json', import.meta.url).href },
+  { id: 'night', name: 'Neon Night GP', url: new URL('./tracks/night.json', import.meta.url).href },
+  { id: 'canyon', name: 'Canyon River', url: new URL('./tracks/canyon.json', import.meta.url).href },
+  { id: 'coastal-palm', name: 'Coastal Palm (v1)', url: TRACK_URL, embedded: EMBEDDED_TRACK }
+];
+
+// HSL nudge — hex in, hex out, so palettes stay plain data.
+function shiftHsl(hex, { h = 0, s = 0, l = 0 } = {}) {
+  const c = new THREE.Color(hex);
+  const o = { h: 0, s: 0, l: 0 };
+  c.getHSL(o);
+  c.setHSL(
+    (o.h + h + 1) % 1,
+    THREE.MathUtils.clamp(o.s + s, 0, 1),
+    THREE.MathUtils.clamp(o.l + l, 0, 1)
+  );
+  return `#${c.getHexString()}`;
+}
+
+// 4 light-to-dark tones of a base (+ optional extra-dark dune tone).
+function toneArray(base, { spread = 0.05, sat = 0, dark = null } = {}) {
+  const offs = [-spread, 0, spread * 0.6, spread * 1.3];
+  const out = offs.map((l) => shiftHsl(base, { s: sat, l }));
+  if (dark != null) out.push(shiftHsl(base, { s: sat, l: dark }));
+  return out;
+}
+
+/**
+ * Turn a track def's theme into the palette the voxel builder uses.
+ * Fixed colors (curbs, barriers, checker, island, cars, stand) stay in PAL;
+ * everything environment-derived is theme-driven here, so each of the five
+ * styles reads as a different world without touching the builder.
+ */
+// Production themes carry ground/road as { base, spot?, patch? } tone
+// groups (see tracks/coastal-palm.json); flatten to the 5-tone / 4-tone
+// arrays the builder picks from, deriving missing tones from the base.
+function groundTones(g) {
+  if (typeof g === 'string') return toneArray(g, { sat: 0.03, spread: 0.045, dark: -0.16 });
+  const base = g?.base ?? '#efe0bd';
+  return [
+    base,
+    g?.spot ?? shiftHsl(base, { l: -0.045 }),
+    g?.patch ?? shiftHsl(base, { l: -0.09 }),
+    shiftHsl(base, { l: 0.045 }),
+    shiftHsl(base, { l: -0.16 })
+  ];
+}
+function roadTones(r) {
+  if (typeof r === 'string') return toneArray(r, { spread: 0.03 });
+  const base = r?.base ?? '#3a3f4d';
+  return [
+    base,
+    r?.spot ?? shiftHsl(base, { l: -0.03 }),
+    shiftHsl(base, { l: 0.035 }),
+    shiftHsl(base, { l: -0.055 })
+  ];
+}
+
+function makePalette(def) {
+  const th = def.theme ?? {};
+  const pitTone = def.pitLane?.pit ?? th.pit ?? '#8b95ad';
+  const water = typeof th.water === 'string' ? th.water : '#19b8c9';
+  return {
+    sky: th.sky ?? '#9fd8f8',
+    hemiSky: th.ambient?.sky ?? '#d8f4ff',
+    hemiGround: th.ambient?.ground ?? '#ffd98a',
+    hemiIntensity: (th.ambient?.intensity ?? 0.75) * Math.PI,
+    sun: th.sun?.color ?? '#fff3d6',
+    sunIntensity: (th.sun?.intensity ?? 1.0) * Math.PI,
+    sand: groundTones(th.ground),
+    road: roadTones(th.road),
+    pit: toneArray(pitTone, { spread: 0.03 }),
+    pitBox: shiftHsl(pitTone, { l: 0.3 }),
+    pitWall: shiftHsl(pitTone, { l: -0.35 }),
+    water: toneArray(water, { sat: 0.05, spread: 0.055 }),
+    waterGlint: shiftHsl(water, { s: -0.5, l: 0.45 }),
+    foam: shiftHsl(water, { s: -0.8, l: 0.5 }),
+    salt: th.salt ?? null,
+    edgeLines: !!th.edgeLines,
+    accent: def.pitLane?.accent ?? PAL.accent
+  };
+}
+
+/* =========================================================================
  * 4. Voxel batch — InstancedMesh builder over a shared unit box
  * ======================================================================= */
 
@@ -257,10 +354,13 @@ class VoxelBatch {
    * @param {string} name
    * @param {{cast?: boolean, receive?: boolean}} opts
    */
-  constructor(name, { cast = false, receive = true } = {}) {
+  constructor(name, { cast = false, receive = true, emissive = false } = {}) {
     this.name = name;
     this.cast = cast;
     this.receive = receive;
+    // emissive: unlit MeshBasicMaterial — colors may exceed 1.0 so the
+    // bloom bright-pass picks them up (neon, beacons, floodlights)
+    this.emissive = emissive;
     // flat [x, y, z, sx, sy, sz, ry, Color]*
     this.items = [];
     this.count = 0;
@@ -273,11 +373,11 @@ class VoxelBatch {
 
   build(parent) {
     if (this.count === 0) return null;
-    const mesh = new THREE.InstancedMesh(
-      unitBox,
-      new THREE.MeshLambertMaterial({ color: 0xffffff }),
-      this.count
-    );
+    const mat = this.emissive
+      ? new THREE.MeshBasicMaterial({ color: 0xffffff })
+      : new THREE.MeshLambertMaterial({ color: 0xffffff });
+    const mesh = new THREE.InstancedMesh(unitBox, mat, this.count);
+    mesh.name = this.name;
     for (let i = 0; i < this.count; i++) {
       const o = i * 8;
       _pos.set(this.items[o], this.items[o + 1], this.items[o + 2]);
@@ -336,10 +436,345 @@ const CARS = [
   { name: 'Overtaker99', color: '#34c759', s: 840, lane: -1.8 }
 ];
 
+// Glow tones (unlit batch; channel values > 1 clear the bloom threshold).
+const GLOW = {
+  warm: new THREE.Color(1.6, 1.35, 0.9),   // pit-lane lamps
+  entry: new THREE.Color(3.4, 0.7, 0.5),   // pit entry beacon (red)
+  exit: new THREE.Color(0.5, 2.5, 0.9),    // pit exit beacon (green)
+  flood: new THREE.Color(1.9, 2.1, 2.6),   // circuit floodlights
+  chand: new THREE.Color(1.8, 1.9, 2.4),   // track-side chandeliers
+  edge: new THREE.Color(0.5, 1.55, 2.1),   // night-circuit edge lines
+  beacon: new THREE.Color(2.4, 1.9, 0.7),  // lighthouse beacon
+  winWarm: new THREE.Color(2.0, 1.45, 0.65),
+  winCool: new THREE.Color(0.75, 1.55, 2.2),
+  beaconRed: new THREE.Color(3.8, 0.55, 0.5), // tower aviation light
+  fall: new THREE.Color(0.55, 2.0, 2.4)    // waterfall sheet
+};
+
+// Per-type vegetation tones (fixed — the species don't change per theme).
+const VEGC = {
+  cactus: new THREE.Color('#2f9e52'),
+  cactus2: new THREE.Color('#3cb565'),
+  spruce0: new THREE.Color('#1d6b46'),
+  spruce1: new THREE.Color('#24805a'),
+  snow: new THREE.Color('#f2f6fa'),
+  brush0: new THREE.Color('#9c6b33'),
+  brush1: new THREE.Color('#8a5a2b')
+};
+
+// Landmark tones (fixed per material, not per theme).
+const LMC = {
+  towerLight: new THREE.Color('#f5efe2'),
+  towerRed: new THREE.Color('#e8362e'),
+  towerDark: new THREE.Color('#232c47'),
+  dune0: new THREE.Color('#f7d88b'),
+  dune1: new THREE.Color('#eec06a'),
+  cont0: new THREE.Color('#d1495b'),
+  cont1: new THREE.Color('#2a9d8f'),
+  cont2: new THREE.Color('#e9a03b'),
+  cont3: new THREE.Color('#3a5fa8'),
+  rock0: new THREE.Color('#7c8ba1'),
+  rock1: new THREE.Color('#8fa0b5'),
+  butte0: new THREE.Color('#b5623a'),
+  butte1: new THREE.Color('#c97a4a'),
+  butteTop: new THREE.Color('#d98e5f')
+};
+
+/**
+ * Pit lane: gray slab parallel to the racing line, connected to the track
+ * at entry/exit by road-edge links, pit boxes along the outer edge, wall
+ * edging on both sides, pit lamps on the road edge and entry (red) / exit
+ * (green) beacons. Returns info for the minimap, the barrier skip-zone and
+ * the `pit` camera preset.
+ */
+function buildPitLane(def, ctx) {
+  const { pointAt, tangentAt, lengthM, roadWidthM, lane, boxes, glow, pick, addAt } = ctx;
+  const { cPit, cPitBox, cPitWall, cPost, cAccent, cWarm, cEntry, cExit } = ctx;
+  const pitDef = def.pitLane;
+
+  const s0 = (pitDef.fromFrac ?? 0.02) * lengthM;
+  const s1 = (pitDef.toFrac ?? 0.12) * lengthM;
+  const off = pitDef.offsetM ?? 15;
+  const side = Math.sign(off);
+  const widthM = pitDef.widthM ?? 9;
+  const cols = Math.max(2, Math.round(widthM / 2.4));
+  const colW = widthM / cols;
+
+  // slab: rows of cubes hugging the centerline at `off` from the racing line
+  const nRows = Math.max(8, Math.round(Math.abs(s1 - s0) / 3.5));
+  const pitPoints = [];
+  for (let i = 0; i <= nRows; i++) {
+    const s = s0 + (s1 - s0) * (i / nRows);
+    const p = pointAt(s);
+    const t = tangentAt(s);
+    const yaw = Math.atan2(t.x, t.z);
+    pitPoints.push({ x: p.x - t.z * off, z: p.z + t.x * off });
+    for (let c = 0; c < cols; c++) {
+      const co = (c - (cols - 1) / 2) * colW;
+      lane.add(p.x - t.z * (off + co), PIT_TOP - PIT_H / 2, p.z + t.x * (off + co),
+        colW + 0.05, PIT_H, 3.7, pick(cPit), yaw);
+    }
+  }
+
+  // entry/exit links: cubes stepping from the road edge across the turf to
+  // the pit slab — the visual connection between track and pit lane
+  for (const sEnd of [s0, s1]) {
+    const p = pointAt(sEnd);
+    const t = tangentAt(sEnd);
+    const nx = -t.z, nz = t.x;
+    const yaw = Math.atan2(t.x, t.z);
+    const roadEdge = roadWidthM / 2 - 1.2;
+    const span = Math.abs(off) - roadEdge;
+    const steps = Math.max(2, Math.round(span / 2.6));
+    for (let k = 0; k < steps; k++) {
+      const d = roadEdge + span * (k / (steps - 1));
+      lane.add(p.x + nx * d * side, PIT_TOP - PIT_H / 2, p.z + nz * d * side,
+        3.2, PIT_H, 2.8, pick(cPit), yaw);
+    }
+  }
+
+  // pit boxes on the outer edge: floor slab + outer wall + accent stripe
+  const spacing = pitDef.boxSpacing ?? 22;
+  for (let bs = s0 + 7; bs <= s1 - 7; bs += spacing) {
+    const p = pointAt(bs);
+    const t = tangentAt(bs);
+    const yaw = Math.atan2(t.x, t.z);
+    const bo = off + side * (widthM / 2 + 2.4);
+    addAt(boxes, p.x, p.z, yaw, -bo, PIT_TOP + 0.25, 0, 5.2, 0.5, 6.4, cPitBox);
+    addAt(boxes, p.x, p.z, yaw, -bo - side * 2.4, 1.05, 0, 0.8, 2.3, 6.4, cPitWall);
+    addAt(boxes, p.x, p.z, yaw, -bo - side * 1.9, PIT_TOP + 0.95, 0, 0.9, 0.28, 6.4, cAccent);
+  }
+
+  // pit-wall edging along both long sides of the slab. The wall on the
+  // road-edge side would sit across the entry/exit link — leave a gap there.
+  const crossedEo = -(widthM / 2 + 0.2) * side;
+  for (const eo of [-(widthM / 2 + 0.2), widthM / 2 + 0.2]) {
+    for (let i = 0; i <= nRows; i += 2) {
+      const s = s0 + (s1 - s0) * (i / nRows);
+      if (eo === crossedEo && (s - s0 < 4.5 || s1 - s < 4.5)) continue;
+      const p = pointAt(s);
+      const t = tangentAt(s);
+      const d = off + eo;
+      boxes.add(p.x - t.z * d, PIT_TOP + 0.35, p.z + t.x * d, 0.6, 0.8, 7.0, cPitWall, Math.atan2(t.x, t.z));
+    }
+  }
+
+  // pit lamps on the road edge (unlit glow batch)
+  for (let ls = s0 + 4; ls < s1 - 4; ls += 13) {
+    const p = pointAt(ls);
+    const t = tangentAt(ls);
+    const nx = -t.z, nz = t.x;
+    const d = roadWidthM / 2 + 0.9;
+    const lx = p.x + nx * d * side, lz = p.z + nz * d * side;
+    glow.add(lx, 2.2, lz, 0.32, 2.5, 0.32, cPost);
+    glow.add(lx, 3.55, lz, 1.15, 0.22, 0.7, cWarm);
+  }
+
+  // entry (red) / exit (green) beacon stacks on posts at the road edge
+  for (const [sEnd, cBeacon] of [[s0, cEntry], [s1, cExit]]) {
+    const p = pointAt(sEnd);
+    const t = tangentAt(sEnd);
+    const nx = -t.z, nz = t.x;
+    const d = roadWidthM / 2 + 1.2;
+    const bx = p.x + nx * d * side, bz = p.z + nz * d * side;
+    glow.add(bx, 2.0, bz, 0.4, 3.0, 0.4, cPost);
+    for (let k = 0; k < 3; k++) glow.add(bx, 3.9 + k * 0.75, bz, 1.3, 0.6, 1.3, cBeacon);
+  }
+
+  // camera target for the `pit` preset: between road edge and slab at entry
+  const ep = pointAt(s0), et = tangentAt(s0);
+  const entryMid = new THREE.Vector3(
+    ep.x - et.z * (roadWidthM / 4 + Math.abs(off) / 2), 0,
+    ep.z + et.x * (roadWidthM / 4 + Math.abs(off) / 2)
+  );
+  return { s0, s1, side, off, widthM, pitPoints, entryMid };
+}
+
+/**
+ * Vegetation: hand-placed props + seeded scatter (identical candidate math
+ * to the production client), per-type shapes: palm / cactus / spruce /
+ * brush. Skips anything landing on the pit slab.
+ */
+function buildVegetation(def, ctx) {
+  const { samples, roadWidthM, trunkBatch, vegA, vegB, vegC, pitInfo } = ctx;
+  const all = (def.props ?? []).concat(
+    scatterProps(def, samples, roadWidthM, def.water ?? [])
+  );
+  const nearPit = (x, z) => {
+    if (!pitInfo?.pitPoints?.length) return false;
+    const r = pitInfo.widthM / 2 + 4;
+    for (const pp of pitInfo.pitPoints) {
+      const dx = x - pp.x, dz = z - pp.z;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    return false;
+  };
+  const veg = all
+    .filter((p) => ['palm', 'cactus', 'spruce', 'brush'].includes(p.type))
+    .filter((p) => !nearPit(p.x, p.z));
+  const rngH = createRng(99);
+  for (const p of veg) {
+    const y = GROUND_TOP;
+    if (p.type === 'palm') {
+      const h = rngH.int(6, 9);
+      trunkBatch.add(p.x, y + h / 2, p.z, 1.2, h, 1.2, ctx.cTrunk);
+      vegA.add(p.x, y + h + 0.2, p.z, 7, 1.2, 2.6, ctx.cLeaf0);
+      vegB.add(p.x, y + h + 0.2, p.z, 2.6, 1.2, 7, ctx.cLeaf1);
+      vegC.add(p.x, y + h + 1.2, p.z, 4.4, 1, 4.4, ctx.cLeaf2);
+    } else if (p.type === 'cactus') {
+      const h = rngH.int(5, 8);
+      trunkBatch.add(p.x, y + h / 2, p.z, 1.5, h, 1.5, ctx.cCactus);
+      vegA.add(p.x - 1.4, y + h * 0.55, p.z, 0.8, 1.5, 0.8, ctx.cCactus2);
+      vegB.add(p.x + 1.4, y + h * 0.7, p.z, 0.8, 1.5, 0.8, ctx.cCactus2);
+      vegC.add(p.x, y + h + 0.3, p.z, 1.5, 0.8, 1.5, ctx.cCactus);
+    } else if (p.type === 'spruce') {
+      const h = rngH.int(5, 8);
+      trunkBatch.add(p.x, y + 0.8, p.z, 0.9, 1.6, 0.9, ctx.cTrunk);
+      vegA.add(p.x, y + 1.6 + h * 0.25, p.z, 4.6, h * 0.5, 4.6, ctx.cSpruce0);
+      vegB.add(p.x, y + 1.6 + h * 0.55, p.z, 3.2, h * 0.45, 3.2, ctx.cSpruce1);
+      vegC.add(p.x, y + 1.6 + h * 0.8, p.z, 1.9, h * 0.35, 1.9, ctx.cSnow);
+    } else { // brush
+      const s = rngH.int(14, 20) / 10;
+      vegA.add(p.x, y + 0.5 * s, p.z, 1.9 * s, 1.0 * s, 1.9 * s,
+        rngH.next() < 0.5 ? ctx.cBrush0 : ctx.cBrush1);
+    }
+  }
+}
+
+/**
+ * Resolve a prop's position: `{s, off}` props sit relative to the racing
+ * line (s in arc meters, off in meters along the left normal); `{x, z}`
+ * props are absolute (pre-scaled by the track generator). yaw always ends
+ * up as the track heading at the site, so local +Z runs along the track.
+ */
+function placeProp(p, pointAt, tangentAt) {
+  if (p.s != null) {
+    const cp = pointAt(p.s);
+    const t = tangentAt(p.s);
+    const nx = -t.z, nz = t.x;
+    const off = p.off ?? 0;
+    return { x: cp.x + nx * off, z: cp.z + nz * off, yaw: Math.atan2(t.x, t.z) };
+  }
+  return { x: p.x, z: p.z, yaw: p.rot ?? 0 };
+}
+
+/**
+ * Track landmarks (per type): lighthouse, pyramid, dune, container,
+ * floodlight, chandelier, skyscraper, peak, butte, waterfall. Grandstands,
+ * signs, boats and vegetation are handled by their own sections.
+ */
+function buildLandmarks(def, ctx) {
+  const { lm, glow, pointAt, tangentAt, roadWidthM, cPost, cFoam, addAt } = ctx;
+  const y0 = GROUND_TOP;
+  for (const p of def.props ?? []) {
+    const q = placeProp(p, pointAt, tangentAt);
+    switch (p.type) {
+      case 'lighthouse': {
+        const w = p.w ?? 4.5;
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + 5, 0, w, 10, w, ctx.cTowerLight);
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + 7.6, 0, w + 0.6, 1.6, w + 0.6, ctx.cTowerRed);
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + 8.9, 0, w + 1.6, 0.5, w + 1.6, ctx.cTowerLight);
+        addAt(glow, q.x, q.z, q.yaw, 0, y0 + 9.8, 0, 1.6, 1.1, 1.6, GLOW.beacon);
+        break;
+      }
+      case 'pyramid': {
+        const h = p.h ?? 16, base = p.base ?? 14;
+        const layers = 6;
+        for (let i = 0; i < layers; i++) {
+          const s = base * (1 - i / layers) + 1.5;
+          addAt(lm, q.x, q.z, q.yaw, 0, y0 + (h / layers) * (i + 0.5), 0,
+            s, h / layers, s, i % 2 === 0 ? ctx.cDune0 : ctx.cDune1);
+        }
+        addAt(glow, q.x, q.z, q.yaw, 0, y0 + h + 0.4, 0, 1.2, 0.8, 1.2,
+          new THREE.Color(2.4, 2.0, 1.1));
+        break;
+      }
+      case 'dune': {
+        const w = p.w ?? 16, h = p.h ?? 5;
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + 0.7, 0, w, 1.4, w * 0.62, ctx.cDune0);
+        addAt(lm, q.x, q.z, q.yaw, -w * 0.08, y0 + 1.9, 0, w * 0.72, 1.2, w * 0.48, ctx.cDune1);
+        addAt(lm, q.x, q.z, q.yaw, -w * 0.14, y0 + h * 0.62, 0, w * 0.42, 1.0, w * 0.3, ctx.cDune0);
+        break;
+      }
+      case 'container': {
+        const cols = [ctx.cCont0, ctx.cCont1, ctx.cCont2, ctx.cCont3];
+        const n = 1 + (Math.abs(Math.round(q.x * 7)) % 3);
+        for (let i = 0; i < n; i++) {
+          addAt(lm, q.x, q.z, q.yaw,
+            (i - (n - 1) / 2) * 6.4, y0 + 1.1 + Math.floor(i / 2) * 2.3,
+            (i % 2) * 3.2 - 1.6, 6.0, 2.2, 2.6, cols[(i + Math.round(q.x)) % 4]);
+        }
+        break;
+      }
+      case 'floodlight': {
+        const h = 14;
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h / 2, 0, 0.55, h, 0.55, cPost);
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h + 0.4, 0, 2.6, 0.9, 1.2, cPost);
+        for (let i = 0; i < 3; i++) {
+          addAt(glow, q.x, q.z, q.yaw, -0.8 + i * 0.8, y0 + h + 0.45, 0, 0.5, 0.4, 0.5, GLOW.flood);
+        }
+        break;
+      }
+      case 'chandelier': {
+        const half = roadWidthM / 2 + 2;
+        for (const sgn of [-1, 1]) {
+          addAt(lm, q.x, q.z, q.yaw, sgn * half, y0 + 3.5, 0, 0.5, 7, 0.5, cPost);
+        }
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + 6.8, 0, half * 2 + 1, 0.4, 0.6, cPost);
+        for (const dx of [-half + 1.5, -half / 2, half / 2, half - 1.5]) {
+          addAt(glow, q.x, q.z, q.yaw, dx, y0 + 6.2, 0, 0.9, 0.5, 0.9, GLOW.chand);
+        }
+        break;
+      }
+      case 'skyscraper': {
+        const h = p.h ?? 22, w = p.w ?? 9;
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h / 2, 0, w, h, w, ctx.cTowerDark);
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h + 1.2, 0, 0.5, 2.4, 0.5, cPost);
+        for (let i = 0; i < 5; i++) {
+          const warm = (i + Math.round(q.x + q.z)) % 2 === 0;
+          addAt(glow, q.x, q.z, q.yaw, 0, y0 + 3 + i * (h - 5) / 5, 0,
+            w + 0.3, 0.55, w + 0.3, warm ? GLOW.winWarm : GLOW.winCool);
+        }
+        addAt(glow, q.x, q.z, q.yaw, 0, y0 + h + 2.6, 0, 0.6, 0.6, 0.6, GLOW.beaconRed);
+        break;
+      }
+      case 'peak': {
+        const h = p.h ?? 30, base = p.base ?? 26;
+        const layers = 8;
+        for (let i = 0; i < layers; i++) {
+          const s = base * (1 - i / layers) + 2;
+          addAt(lm, q.x, q.z, q.yaw, 0, y0 + (h / layers) * (i + 0.5), 0,
+            s, h / layers, s, i % 2 === 0 ? ctx.cRock0 : ctx.cRock1);
+        }
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h + 0.6, 0, 4, 1.4, 4, ctx.cSnow);
+        break;
+      }
+      case 'butte': {
+        const h = p.h ?? 10, base = p.base ?? 18;
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h * 0.3, 0, base, h * 0.6, base, ctx.cButte0);
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h * 0.75, 0, base * 0.66, h * 0.5, base * 0.66, ctx.cButte1);
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h + 0.4, 0, base * 0.62, 0.9, base * 0.62, ctx.cButteTop);
+        break;
+      }
+      case 'waterfall': {
+        const w = p.w ?? 10, h = p.h ?? 8;
+        for (let i = 0; i < 4; i++) {
+          addAt(glow, q.x, q.z, q.yaw, (i - 1.5) * (w / 4), y0 + h / 2, 0,
+            w / 4 + 0.05, h, 0.9, GLOW.fall);
+        }
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + h + 0.4, 0, w + 2, 0.9, 1.4, ctx.cRock1);
+        addAt(lm, q.x, q.z, q.yaw, 0, y0 + 0.25, 0, w + 3, 0.5, 2.5, cFoam);
+        break;
+      }
+      default: break; // grandstand / sign / boat / vegetation: own sections
+    }
+  }
+}
+
 /**
  * Build the whole voxel world for a track def. Returns
  * { group, cars, trackCenter, fitBox, size, map, waterCircles, startLine,
- *   instanceCount }.
+ *   pit, palette, instanceCount }.
  */
 function buildVoxelWorld(def) {
   const group = new THREE.Group();
@@ -353,14 +788,16 @@ function buildVoxelWorld(def) {
   const pointAt = (s) => curve.getPointAt(wrap(s) / arclen);
   const tangentAt = (s) => curve.getTangentAt(wrap(s) / arclen);
 
+  const hexC = (h) => new THREE.Color(h);
   const rng = createRng(7); // tone picking (visual only, fixed seed)
   const pick = (arr) => arr[Math.floor(rng.next() * arr.length)];
-  const sandC = PAL.sand.map((h) => new THREE.Color(h));
-  const roadC = PAL.road.map((h) => new THREE.Color(h));
-  const waterC = PAL.water.map((h) => new THREE.Color(h));
-  const glintC = new THREE.Color(PAL.waterGlint);
-  const foamC = new THREE.Color(PAL.foam);
-  const pitC = PAL.pit.map((h) => new THREE.Color(h));
+  const pal = makePalette(def);
+  const sandC = pal.sand.map(hexC);
+  const roadC = pal.road.map(hexC);
+  const waterC = pal.water.map(hexC);
+  const glintC = hexC(pal.waterGlint);
+  const foamC = hexC(pal.foam);
+  const pitC = pal.pit.map(hexC);
   const cCurbRed = new THREE.Color(PAL.curbRed);
   const cCurbWhite = new THREE.Color(PAL.curbWhite);
   const cBarRed = new THREE.Color(PAL.barrierRed);
@@ -368,15 +805,15 @@ function buildVoxelWorld(def) {
   const cLine = new THREE.Color(PAL.lineWhite);
   const cCheckW = new THREE.Color(PAL.checkerW);
   const cCheckD = new THREE.Color(PAL.checkerD);
-  const cPitBox = new THREE.Color(PAL.pitBox);
-  const cPitWall = new THREE.Color(PAL.pitWall);
+  const cPitBox = hexC(pal.pitBox);
+  const cPitWall = hexC(pal.pitWall);
   const cTrunk = new THREE.Color(PAL.trunk);
   const cLeaf = PAL.leaf.map((h) => new THREE.Color(h));
   const cStandBase = new THREE.Color(PAL.standBase);
   const cStandStep = new THREE.Color(PAL.standStep);
   const cStandRoof = new THREE.Color(PAL.standRoof);
   const cStandPost = new THREE.Color(PAL.standPost);
-  const cAccent = new THREE.Color(PAL.accent);
+  const cAccent = hexC(pal.accent);
   const cHull = new THREE.Color(PAL.hull);
   const cStripe = new THREE.Color(PAL.stripe);
   const cWhite = new THREE.Color('#ffffff');
@@ -533,31 +970,18 @@ function buildVoxelWorld(def) {
     }
   }
 
-  // ---- pit lane + boxes (inside of the start straight)
+  // ---- pit lane (def.pitLane): parallel slab + entry/exit links + pit
+  // boxes + road-edge lamps + entry/exit beacons (coastal-palm carries a
+  // synthesized pitLane in the embedded snapshot)
   const pit = new VoxelBatch('pit-lane');
   const pitBoxes = new VoxelBatch('pit-boxes', { cast: true });
-  {
-    const pitOffset = -20;
-    const rows = 32;
-    const step = (95 - 15) / rows;
-    for (let i = 0; i < rows; i++) {
-      const s = 15 + i * step;
-      const p = pointAt(s);
-      const t = tangentAt(s);
-      const yaw = Math.atan2(t.x, t.z);
-      for (let c = 0; c < 2; c++) {
-        const off = pitOffset + (c - 0.5) * 2.5;
-        pit.add(p.x - t.z * off, PIT_TOP - PIT_H / 2, p.z + t.x * off, 2.5, PIT_H, 2.5, pick(pitC), yaw);
-      }
-    }
-    for (const s of [35, 55, 75]) {
-      const p = pointAt(s);
-      const t = tangentAt(s);
-      const yaw = Math.atan2(t.x, t.z);
-      addAt(pitBoxes, p.x, p.z, yaw, 0, PIT_TOP + 0.25, -20, 6, 0.5, 5, cPitBox);
-      addAt(pitBoxes, p.x, p.z, yaw, 0, 1.0, -24.5, 6.5, 2.4, 1.2, cPitWall);
-    }
-  }
+  const glow = new VoxelBatch('glow', { emissive: true });
+  const pitInfo = buildPitLane(def, {
+    pointAt, tangentAt, lengthM, roadWidthM,
+    lane: pit, boxes: pitBoxes, glow, pick, addAt,
+    cPit: pitC, cPitBox, cPitWall, cPost, cAccent,
+    cWarm: GLOW.warm, cEntry: GLOW.entry, cExit: GLOW.exit
+  });
 
   // ---- barriers (dark base slab + red/white top cube, full circuit).
   // The base reaches the sand so the wall reads solid from any angle.
@@ -566,8 +990,14 @@ function buildVoxelWorld(def) {
     const off = roadWidthM / 2 + 3;
     const step = lengthM / N_BARRIERS;
     const cBase = new THREE.Color('#2b3040');
+    // keep the pit-side barriers clear around the pit links (only relevant
+    // when the pit sits on the barrier side, i.e. normal(+))
+    const pitSkip = pitInfo.side === 1
+      ? (s) => Math.abs(s - pitInfo.s0) < 12 || Math.abs(s - pitInfo.s1) < 12
+      : () => false;
     for (let i = 0; i < N_BARRIERS; i++) {
       const s = i * step;
+      if (pitSkip(s)) continue;
       const p = pointAt(s);
       const t = tangentAt(s);
       const yaw = Math.atan2(t.x, t.z);
@@ -578,9 +1008,11 @@ function buildVoxelWorld(def) {
     }
   }
 
-  // ---- lake (cube grid clipped to the circle) + bright foam edge
+  // ---- water (cube grid clipped to the circles) + bright foam edge;
+  // `salt: true` circles are dry salt pans (dunes)
   const water = new VoxelBatch('water');
   const foam = new VoxelBatch('foam');
+  const salt = new VoxelBatch('salt');
   {
     const circles = def.water ?? [];
     if (circles.length) {
@@ -589,17 +1021,25 @@ function buildVoxelWorld(def) {
       const z0 = Math.floor((trackCenter.z - groundSize.z / 2) / TILE);
       const z1 = Math.ceil((trackCenter.z + groundSize.z / 2) / TILE);
       const t = TILE - TILE_GAP;
+      const saltA = hexC(pal.salt ?? '#e9e2cc');
+      const saltB = saltA.clone().offsetHSL(0, 0, 0.05);
       for (const w of circles) {
+        const isSalt = !!w.salt;
         for (let gx = x0; gx < x1; gx++) {
           for (let gz = z0; gz < z1; gz++) {
             const cx = (gx + 0.5) * TILE;
             const cz = (gz + 0.5) * TILE;
             const d = Math.hypot(cx - w.x, cz - w.z);
             if (d < w.r - 3) {
-              const color = rng.next() < 0.06 ? glintC : pick(waterC);
-              water.add(cx, WATER_TOP - WATER_H / 2, cz, t, WATER_H, t, color);
+              if (isSalt) {
+                salt.add(cx, GROUND_TOP - 0.55, cz, t, 0.6, t, rng.next() < 0.12 ? saltB : saltA);
+              } else {
+                const color = rng.next() < 0.06 ? glintC : pick(waterC);
+                water.add(cx, WATER_TOP - WATER_H / 2, cz, t, WATER_H, t, color);
+              }
             } else if (d < w.r) {
-              foam.add(cx, FOAM_TOP - FOAM_H / 2, cz, t, FOAM_H, t, foamC);
+              if (isSalt) salt.add(cx, GROUND_TOP - 0.45, cz, t, 0.5, t, saltB);
+              else foam.add(cx, FOAM_TOP - FOAM_H / 2, cz, t, FOAM_H, t, foamC);
             }
           }
         }
@@ -610,36 +1050,37 @@ function buildVoxelWorld(def) {
   // ---- palms: hand-placed + seeded scatter (identical placement to the
   // production client: scatter rng = seed 11, height rng = seed 99 drawn in
   // props-array order — the only rng consumer on this track)
-  const palmTrunk = new VoxelBatch('palm-trunks', { cast: true });
-  const crownA = new VoxelBatch('palm-crown-a', { cast: true });
-  const crownB = new VoxelBatch('palm-crown-b', { cast: true });
-  const crownC = new VoxelBatch('palm-crown-c', { cast: true });
+  const vegTrunk = new VoxelBatch('veg-trunks', { cast: true });
+  const vegA = new VoxelBatch('veg-a', { cast: true });
+  const vegB = new VoxelBatch('veg-b', { cast: true });
+  const vegC = new VoxelBatch('veg-c', { cast: true });
   {
     const samples = [];
     for (let i = 0; i < 160; i++) {
       const p = curve.getPointAt(i / 160);
       samples.push({ x: p.x, z: p.z });
     }
-    const all = (def.props ?? []).concat(
-      scatterProps(def, samples, roadWidthM, def.water ?? [])
-    );
-    const palms = all.filter((p) => p.type === 'palm');
-    const rngH = createRng(99);
-    for (const p of palms) {
-      const h = rngH.int(6, 9);
-      const y = GROUND_TOP;
-      palmTrunk.add(p.x, y + h / 2, p.z, 1.2, h, 1.2, cTrunk);
-      crownA.add(p.x, y + h + 0.2, p.z, 7, 1.2, 2.6, cLeaf[0]);
-      crownB.add(p.x, y + h + 0.2, p.z, 2.6, 1.2, 7, cLeaf[1]);
-      crownC.add(p.x, y + h + 1.2, p.z, 4.4, 1, 4.4, cLeaf[2]);
-    }
+    buildVegetation(def, {
+      samples, roadWidthM, pitInfo,
+      trunkBatch: vegTrunk, vegA, vegB, vegC,
+      cTrunk, cLeaf0: cLeaf[0], cLeaf1: cLeaf[1], cLeaf2: cLeaf[2],
+      cCactus: VEGC.cactus, cCactus2: VEGC.cactus2,
+      cSpruce0: VEGC.spruce0, cSpruce1: VEGC.spruce1,
+      cSnow: VEGC.snow, cBrush0: VEGC.brush0, cBrush1: VEGC.brush1
+    });
   }
 
   // ---- grandstand (production geometry, vibrant tones + accent trim)
   const stand = new VoxelBatch('grandstand', { cast: true });
   {
-    const p = (def.props ?? []).find((q) => q.type === 'grandstand');
+    let p = (def.props ?? []).find((q) => q.type === 'grandstand');
     if (p) {
+      if (p.s != null) { // curve-relative: stand runs along the track at `off`
+        const cp = pointAt(p.s); const t = tangentAt(p.s);
+        const nx = -t.z, nz = t.x;
+        const off = p.off ?? 18;
+        p = { ...p, x: cp.x + nx * off, z: cp.z + nz * off, rot: Math.atan2(t.x, t.z) + Math.PI / 2 };
+      }
       const w = p.w ?? 30;
       const d = p.d ?? 12;
       const h = p.h ?? 8;
@@ -690,8 +1131,15 @@ function buildVoxelWorld(def) {
       }
       return best;
     };
-    for (const p of def.props ?? []) {
-      if (p.type !== 'sign') continue;
+    for (const q of def.props ?? []) {
+      if (q.type !== 'sign') continue;
+      let p = q;
+      if (p.s != null) { // curve-relative: panel parallel to the track at `off`
+        const cp = pointAt(p.s); const t = tangentAt(p.s);
+        const nx = -t.z, nz = t.x;
+        const off = p.off ?? 16;
+        p = { ...p, x: cp.x + nx * off, z: cp.z + nz * off, rot: Math.atan2(t.x, t.z) + Math.PI / 2 };
+      }
       const w = p.w ?? 8;
       const h = p.h ?? 5;
       const ph = Math.min(2.2, h * 0.45);
@@ -709,6 +1157,34 @@ function buildVoxelWorld(def) {
       }
       addAt(signs, sx, sz, yaw, 0, y + h / 2, 0, 0.8, h, 0.8, cPost);
       addAt(signs, sx, sz, yaw, 0, y + h - 0.3 - ph / 2, 0, w, ph, 0.7, cPanel);
+    }
+  }
+
+  // ---- track landmarks (lighthouse, pyramid, dune, container, floodlight,
+  // chandelier, skyscraper, peak, butte, waterfall)
+  const lm = new VoxelBatch('landmarks', { cast: true });
+  buildLandmarks(def, {
+    lm, glow, pointAt, tangentAt, roadWidthM, cPost, cFoam: foamC, addAt,
+    cTowerLight: LMC.towerLight, cTowerRed: LMC.towerRed, cTowerDark: LMC.towerDark,
+    cDune0: LMC.dune0, cDune1: LMC.dune1,
+    cCont0: LMC.cont0, cCont1: LMC.cont1, cCont2: LMC.cont2, cCont3: LMC.cont3,
+    cRock0: LMC.rock0, cRock1: LMC.rock1,
+    cButte0: LMC.butte0, cButte1: LMC.butte1, cButteTop: LMC.butteTop,
+    cSnow: VEGC.snow
+  });
+
+  // ---- night-circuit edge lines (theme.edgeLines): glowing road edges
+  if (pal.edgeLines) {
+    const step = lengthM / 240;
+    const off = roadWidthM / 2 - 0.9;
+    for (const sgn of [-1, 1]) {
+      for (let i = 0; i < 240; i++) {
+        const s = i * step;
+        const p = pointAt(s);
+        const t = tangentAt(s);
+        glow.add(p.x - t.z * off * sgn, ROAD_TOP + 0.09, p.z + t.x * off * sgn,
+          0.32, 0.1, step + 0.06, GLOW.edge, Math.atan2(t.x, t.z));
+      }
     }
   }
 
@@ -754,8 +1230,8 @@ function buildVoxelWorld(def) {
   // ---- build everything
   let instanceCount = 0;
   for (const b of [sand, road, centerline, checker, ticks, curbs, pit, pitBoxes,
-                   barriers, water, foam, palmTrunk, crownA, crownB, crownC,
-                   stand, boats, signs, ...carBatches]) {
+                   barriers, water, foam, salt, vegTrunk, vegA, vegB, vegC,
+                   stand, boats, signs, lm, ...carBatches, glow]) {
     b.build(group);
     instanceCount += b.count;
   }
@@ -795,6 +1271,13 @@ function buildVoxelWorld(def) {
     map: { points: mapPoints, min: { x: mapMinX, z: mapMinZ }, max: { x: mapMaxX, z: mapMaxZ } },
     waterCircles: def.water ?? [],
     startLine: { p: pointAt(0), t: tangentAt(0) },
+    pit: pitInfo,
+    palette: pal,
+    def,
+    lengthM,
+    roadWidthM,
+    pointAt,
+    tangentAt,
     instanceCount
   };
 }
@@ -910,13 +1393,16 @@ function createRenderer() {
 // NOTE: three r178's physically-based path divides light intensity by PI
 // (verified with an isolated Lambert probe in vendor three.module.js), so
 // intensities are expressed in legacy-equivalent units (value * PI).
-function createLights(trackCenter, size) {
-  scene.add(new THREE.HemisphereLight(
-    new THREE.Color(PAL.hemiSky),
-    new THREE.Color(PAL.hemiGround),
-    0.75 * Math.PI
-  ));
-  const s = new THREE.DirectionalLight(new THREE.Color(PAL.sun), 1.0 * Math.PI);
+let hemi = null;
+function createLights(pal, trackCenter, size) {
+  if (hemi) scene.remove(hemi);
+  hemi = new THREE.HemisphereLight(
+    new THREE.Color(pal.hemiSky),
+    new THREE.Color(pal.hemiGround),
+    pal.hemiIntensity
+  );
+  scene.add(hemi);
+  const s = new THREE.DirectionalLight(new THREE.Color(pal.sun), pal.sunIntensity);
   // production shadow setup: cover the circuit, not the whole ground plane
   const spread = Math.max(size.x, size.z) + 60;
   s.position.set(trackCenter.x + spread * 0.45, 380, trackCenter.z + spread * 0.55);
@@ -990,6 +1476,11 @@ const PRESETS = {
     az: THREE.MathUtils.degToRad(38), el: THREE.MathUtils.degToRad(30), zoom: 3.2, auto: false,
     // frame Tirewrecker + Slipstreamer from the inside of the start sweep
     target: () => world.cars[1].world.clone()
+  },
+  pit: {
+    az: THREE.MathUtils.degToRad(35), el: THREE.MathUtils.degToRad(40), zoom: 2.7, auto: false,
+    // frame the pit lane + entry beacons from between road edge and slab
+    target: () => (world.pit ? world.pit.entryMid.clone() : world.trackCenter.clone())
   }
 };
 
@@ -1116,12 +1607,24 @@ function drawMinimap() {
   ctx.fillStyle = '#0e1420';
   ctx.fillRect(0, 0, W, H);
 
-  // lake
+  // lakes / salt pans
   for (const w of world.waterCircles) {
     ctx.beginPath();
     ctx.arc(mx(w.x), mz(w.z), w.r * scale, 0, Math.PI * 2);
-    ctx.fillStyle = '#0fb9cf';
+    ctx.fillStyle = w.salt ? '#d9d2bc' : '#0fb9cf';
     ctx.fill();
+  }
+
+  // pit lane (under the circuit so the entry/exit links read as connections)
+  if (world.pit?.pitPoints?.length) {
+    ctx.beginPath();
+    world.pit.pitPoints.forEach((p, i) => {
+      if (i) ctx.lineTo(mx(p.x), mz(p.z));
+      else ctx.moveTo(mx(p.x), mz(p.z));
+    });
+    ctx.strokeStyle = '#8b95ad';
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
   }
 
   // circuit
@@ -1164,6 +1667,7 @@ function drawMinimap() {
 let labelEls = [];
 function createLabels() {
   const host = document.getElementById('labels');
+  host.innerHTML = '';
   labelEls = world.cars.map((c) => {
     const el = document.createElement('div');
     el.className = 'car-label';
@@ -1234,38 +1738,120 @@ function bindInteraction() {
 }
 
 /* =========================================================================
- * 11. Boot
+ * 11. Track switching + boot
  * ======================================================================= */
 
-(async function boot() {
-  // ---- track def: live file first, embedded snapshot as fallback
-  let def;
-  try {
-    const res = await fetch(TRACK_URL, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    def = await res.json();
-    trackSource = 'live: tracks/coastal-palm.json';
-  } catch (err) {
-    def = EMBEDDED_TRACK;
-    trackSource = `embedded snapshot (${err.message})`;
+let currentTrackId = '';
+let trackBusy = false;
+let trackBtns = [];
+let trackNameEl = null;
+
+function disposeWorld() {
+  if (world) {
+    scene.remove(world.group);
+    world.group.traverse((o) => {
+      // InstancedMesh: free instance buffers + material; the shared unit
+      // box geometry must survive (every other mesh uses it).
+      if (o.isInstancedMesh) { o.material.dispose(); o.dispose(); }
+      else if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); }
+    });
+    world = null;
   }
+  if (hemi) { scene.remove(hemi); hemi = null; }
+  if (sun) { scene.remove(sun, sun.target); sun = null; }
+}
 
-  renderer = createRenderer();
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(PAL.sky);
-
+function applyWorld(def, source) {
+  const pal = makePalette(def);
+  disposeWorld();
+  scene.background = new THREE.Color(pal.sky);
   world = buildVoxelWorld(def);
   scene.add(world.group);
-  sun = createLights(world.trackCenter, world.size);
+  sun = createLights(pal, world.trackCenter, world.size);
   camera = createCamera(world.trackCenter, world.size);
-
+  view.zoom = 1;
+  view.auto = true;
   view.target = world.trackCenter.clone();
-  createTargets();
   fitCamera(world.fitBox, window.innerWidth / window.innerHeight);
   applyView();
-  bindInteraction();
   createLabels();
   drawMinimap();
+  trackSource = source;
+  console.info(`[voxel-sandbox] track: ${def.id ?? '?'} — ${def.name} (${source})`);
+  console.info(`[voxel-sandbox] voxel instances: ${world.instanceCount}`);
+}
+
+async function fetchTrackDef(entry) {
+  try {
+    const res = await fetch(entry.url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return { def: await res.json(), source: `live: ${entry.url.split('/').pop()}` };
+  } catch (err) {
+    if (entry.embedded) {
+      return { def: entry.embedded, source: `embedded snapshot (${err.message})` };
+    }
+    throw err;
+  }
+}
+
+function setTrackActive(id) {
+  for (const b of trackBtns) b.classList.toggle('active', b.dataset.track === id);
+}
+
+async function selectTrack(id) {
+  if (trackBusy || id === currentTrackId) return;
+  const entry = TRACK_LIST.find((t) => t.id === id);
+  if (!entry) return;
+  trackBusy = true;
+  setTrackActive(id);
+  try {
+    const { def, source } = await fetchTrackDef(entry);
+    currentTrackId = id;
+    applyWorld(def, source);
+    if (trackNameEl) trackNameEl.textContent = def.name;
+  } catch (err) {
+    console.error(`[voxel-sandbox] failed to load track "${id}"`, err);
+  } finally {
+    trackBusy = false;
+  }
+}
+
+(async function boot() {
+  renderer = createRenderer();
+  scene = new THREE.Scene();
+
+  // ---- track style selector (five F1 circuit styles + v1 reference)
+  const selectEl = document.getElementById('track-select');
+  trackNameEl = document.getElementById('track-line'); // HUD track line
+  for (const t of TRACK_LIST) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ts-btn';
+    b.dataset.track = t.id;
+    b.textContent = t.name;
+    b.addEventListener('click', () => selectTrack(t.id));
+    selectEl.appendChild(b);
+    trackBtns.push(b);
+  }
+
+  bindInteraction();
+  createTargets();
+
+  // first track: default is the first in TRACK_LIST; if a fetch fails the
+  // page falls through the list so it always boots to something.
+  const first = await (async () => {
+    for (const t of TRACK_LIST) {
+      try {
+        setTrackActive(t.id);
+        const r = await fetchTrackDef(t);
+        return { t, def: r.def, source: r.source };
+      } catch (err) { /* try the next style */ }
+    }
+    throw new Error('no track data available');
+  })();
+  currentTrackId = first.t.id;
+  if (trackNameEl) trackNameEl.textContent = first.def.name;
+  applyWorld(first.def, first.source);
   window.addEventListener('resize', onResize);
 
   // ---- main loop
@@ -1296,8 +1882,11 @@ function bindInteraction() {
   // screenshot / review API
   window.__voxelSandbox = {
     get ready() { return ready; },
-    source: trackSource,
-    world,
+    get source() { return trackSource; },
+    get current() { return currentTrackId; },
+    tracks: TRACK_LIST.map((t) => ({ id: t.id, name: t.name })),
+    setTrack(id) { return selectTrack(id); },
+    get world() { return world; },
     setView,
     setUiVisible(v) {
       uiHidden = !v;
@@ -1337,6 +1926,20 @@ function bindInteraction() {
         Math.round((v.x * 0.5 + 0.5) * renderer.domElement.clientWidth),
         Math.round((-v.y * 0.5 + 0.5) * renderer.domElement.clientHeight)
       ];
+    },
+    // debug: what does the ray through pixel (px,py) hit first?
+    rayPixel(px, py) {
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(
+        new THREE.Vector2((px / renderer.domElement.clientWidth) * 2 - 1, -(py / renderer.domElement.clientHeight) * 2 + 1),
+        camera
+      );
+      return rc.intersectObject(world.group, true).slice(0, 5).map((h) => ({
+        name: h.object.name || h.object.type,
+        dist: +h.distance.toFixed(1),
+        pt: [ +h.point.x.toFixed(1), +h.point.y.toFixed(2), +h.point.z.toFixed(1) ],
+        instId: h.instanceId ?? null
+      }));
     }
   };
 })().catch((err) => {
