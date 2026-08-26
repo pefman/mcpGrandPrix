@@ -1,12 +1,19 @@
 /**
- * Track definitions — client loader (MCPG-27).
+ * Track definitions — client loader (MCPG-27, contract since MCPG-63).
  *
  * The race server's snapshot carries track.info() (with id since MCPG-27).
  * When the id is known we fetch the full def (waypoints + theme + props)
  * from the same server that serves this page. Old servers (no id / unknown
  * id / fetch failure) fall back to LEGACY_DEF: the pre-MCPG-27 control
  * points and dark theme, so the client keeps working against them.
+ *
+ * A fetched def must satisfy the track contract before it reaches the scene
+ * builders: violations fall back to LEGACY_DEF with a console warning (a
+ * broken map degrades to a plain ring, never to NaN geometry or a dead
+ * page). Unknown fields/prop types are stripped with warnings — forward
+ * compatibility.
  */
+import { sanitizeTrackDef, validateTrackDef } from './trackContract.js';
 
 /** Pre-MCPG-27 look: the original 12 control points, dark palette. */
 export const LEGACY_DEF = {
@@ -38,21 +45,32 @@ export const LEGACY_DEF = {
 /**
  * Resolve the visual def for a snapshot's track info.
  * @param {object} trackInfo  track info from the snapshot (may lack id)
- * @returns {Promise<object>} track def
+ * @returns {Promise<object>} track def (validated + sanitized, or LEGACY_DEF)
  */
 export async function loadTrackDef(trackInfo) {
   const id = trackInfo?.id;
   if (!id || id === 'ring') return LEGACY_DEF;
   try {
     const res = await fetch(`/tracks/${encodeURIComponent(id)}.json`);
-    if (!res.ok) return LEGACY_DEF;
+    if (!res.ok) {
+      console.warn(`tracks/${id}.json: fetch failed (${res.status}) — using legacy ring`);
+      return LEGACY_DEF;
+    }
     const def = await res.json();
-    if (!def || !Array.isArray(def.waypoints) || !def.theme) return LEGACY_DEF;
+    const check = validateTrackDef(def);
+    if (!check.ok) {
+      // a broken map must never reach the scene builders: degrade loudly
+      console.warn(`tracks/${id}.json: invalid track contract — using legacy ring`, check.errors);
+      return LEGACY_DEF;
+    }
+    for (const w of check.warnings) console.warn(`tracks/${id}.json: ${w}`);
+    const clean = sanitizeTrackDef(def);
     // prefer the server's authoritative numbers (name/length) if present
-    if (trackInfo.name) def.name = trackInfo.name;
-    if (trackInfo.lengthM) def.lengthM = trackInfo.lengthM;
-    return def;
-  } catch {
+    if (trackInfo.name) clean.name = trackInfo.name;
+    if (trackInfo.lengthM) clean.lengthM = trackInfo.lengthM;
+    return clean;
+  } catch (e) {
+    console.warn(`tracks/${id}: could not load (${e?.message ?? e}) — using legacy ring`);
     return LEGACY_DEF;
   }
 }
