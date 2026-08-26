@@ -63,6 +63,7 @@ export function createUi() {
   const startJoined = $('start-joined');
   const overlayFinished = $('overlay-finished');
   const finalStandings = $('final-standings');
+  const finishedDossiers = $('finished-dossiers');
   const overlayVote = $('overlay-vote');
   const voteCountdown = $('vote-countdown');
   const voteOptions = $('vote-options');
@@ -301,7 +302,7 @@ export function createUi() {
       overlayStart.classList.add('hidden');
     },
 
-    showFinishedOverlay(standings, carNameById, season) {
+    showFinishedOverlay(standings, carNameById, season, dossiers) {
       overlayFinished.classList.remove('hidden');
       finalStandings.textContent = '';
       // MCPG-49: season totals per driver (already include this race's
@@ -329,10 +330,45 @@ export function createUi() {
         row.innerHTML = `<span class="lb-pos">${entry.position}.</span><span class="final-name"><i class="sw-dot" style="background:${color}"></i><span class="lb-nm">${name}</span></span><span class="f-gap">${gap}</span><span class="f-season">${seasonPts}</span>`;
         finalStandings.appendChild(row);
       }
+      // MCPG-62: the team dossier — how the 3-tactic loop played out: how
+      // often the seat rode autopilot vs the driver locking/overriding, and
+      // how often the server's projection landed.
+      finishedDossiers.classList.add('hidden');
+      finishedDossiers.textContent = '';
+      const rows = Object.entries(dossiers ?? {})
+        .map(([name, d]) => ({ name, d }))
+        .filter(({ d }) => (d.windows ?? []).length > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (rows.length > 0) {
+        finishedDossiers.classList.remove('hidden');
+        const title = document.createElement('div');
+        title.className = 'dos-title';
+        title.textContent = 'TEAM DOSSIERS — TRUST THE DATA';
+        finishedDossiers.appendChild(title);
+        for (const { name, d } of rows) {
+          const t = d.trust ?? {};
+          const arch = d.archetypes ?? {};
+          const chosen = Object.values(arch).reduce((a, x) => a + (x.chosen ?? 0), 0);
+          const onTrack = Object.values(arch).reduce((a, x) => a + (x.projectedOnTrack ?? 0), 0);
+          const acc = chosen > 0 ? `${Math.round((onTrack / chosen) * 100)}%` : '—';
+          const row = document.createElement('div');
+          row.className = 'dos-row';
+          row.innerHTML =
+            `<span class="dos-name"></span>` +
+            `<span class="dos-stat"><b>${t.autopilot ?? 0}</b> autopilot</span>` +
+            `<span class="dos-stat"><b>${t.trusted ?? 0}</b> trusted</span>` +
+            `<span class="dos-stat"><b>${t.overridden ?? 0}</b> overridden</span>` +
+            `<span class="dos-stat"><b>${t.longestUnassistedStreak ?? 0}</b> longest streak</span>` +
+            `<span class="dos-stat">projection <b>${acc}</b></span>`;
+          row.querySelector('.dos-name').textContent = name;
+          finishedDossiers.appendChild(row);
+        }
+      }
     },
 
     hideFinishedOverlay() {
       overlayFinished.classList.add('hidden');
+      finishedDossiers.classList.add('hidden');
     },
 
     /**
@@ -433,6 +469,8 @@ export function createUi() {
       labelQueue.length = 0;
       lbRows.textContent = '';
       lbEls.clear();
+      finishedDossiers.textContent = '';
+      finishedDossiers.classList.add('hidden');
       this.setPending([]);
     },
   };

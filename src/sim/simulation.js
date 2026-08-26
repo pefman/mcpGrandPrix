@@ -26,6 +26,14 @@ import {
   reactiveWindowRemainingS,
   resolveCloseBattle,
 } from './reactive.js';
+import {
+  isTacticEnvelope,
+  planFromPlainPacket,
+  recommendedProposal,
+  stampProjections,
+  validateTacticEnvelope,
+} from './tactics.js';
+import { juniorTeamPlan } from './strategies.js';
 
 export const PHASES = ['setup', 'strategy_window', 'simulation', 'reactive_window', 'finished'];
 
@@ -38,6 +46,12 @@ export class Simulation {
     seed = 1,
     track = new Track(),
     onEvent = null, // (eventObj) => void  — event sink for logging
+    // MCPG-62: after this many window seconds without a team plan, the
+    // scripted junior strategist fills in (0 disables the fallback).
+    juniorFallbackSeconds = CONFIG.tactics.juniorFallbackSeconds,
+    // MCPG-62: close a strategy window as soon as every active car has a
+    // plan AND its driver seat is satisfied (autopilot never holds the race).
+    earlyCloseStrategyWindows = CONFIG.timing.earlyCloseStrategyWindows,
   } = {}) {
     if (!Number.isInteger(totalLaps) || totalLaps < 1) throw new Error('totalLaps must be a positive integer');
     this.totalLaps = totalLaps;
@@ -50,8 +64,14 @@ export class Simulation {
 
     this.phase = 'setup';
     this.raceTimeS = 0; // simulated race time
+    this.juniorFallbackSeconds = juniorFallbackSeconds;
+    this.earlyCloseStrategyWindows = earlyCloseStrategyWindows;
     this.cars = [];
     this.windowOpensAtMs = 0;
+    this._juniorFallbackDone = false; // once per window
+    // Separate RNG stream for the junior strategist: its draws must not
+    // perturb the race rng's overtake sequence (and vice versa).
+    this.juniorRng = createRng((seed * 1013 + 7) >>> 0);
     this._overdueCooldowns = new Map(); // `${behindId}|${aheadId}` -> last attempt raceTime
     this._results = []; // finished/retired order
 
@@ -154,12 +174,27 @@ export class Simulation {
     this.phase = 'strategy_window';
     this.currentLap = lapNumber;
     this.windowOpensAtMs = Date.now();
-    for (const car of this.cars) car.submittedStrategy = false;
+    this._juniorFallbackDone = false;
+    for (const car of this.cars) {
+      car.submittedStrategy = false;
+      car.teamPlan = null; // fresh window: last window's plan is gone
+      // The DRIVER SEAT (claim + autopilot/manual mode) persists across
+      // windows (MCPG-62); only this window's pending action is cleared.
+      if (car.driverSeat) car.driverSeat.action = null;
+    }
     this._pitAlertedThisLap = new Set();
     this._reactiveWindowsThisLap = 0;
+    // `standings` lets the dossier (and clients) record the actual outcome
+    // at each window open for the previous window's projections (MCPG-62).
     this._emit('window_opened', {
       lap: lapNumber,
       remainingS: this.strategyWindowSeconds,
+      standings: this.standings().map((s) => ({
+        carId: s.carId,
+        name: s.name,
+        position: s.position,
+        gapToLeaderM: s.gapToLeaderM,
+      })),
     });
   }
 
@@ -176,9 +211,15 @@ export class Simulation {
   }
 
   /**
-   * Apply a strategy packet for the current window.
-   * First valid submission wins; duplicates are rejected (idempotent rule).
-   * @returns {{accepted: boolean, carId?: number, error?: string, details?: string[]}}
+   * Submit this window's plan for a car: a plain strategy packet (the
+   * pre-MCPG-62 contract, unchanged) or a TACTIC ENVELOPE (radio + 1-3
+   * archetype proposal cards, one recommended).
+   *
+   * The plan is held, not applied: at window close the car runs the
+   * recommended packet unless the driver seat locked or overrode it
+   * (MCPG-62 autopilot lifecycle). First valid submission wins; duplicates
+   * are rejected (idempotent rule).
+   * @returns {{accepted: boolean, carId?: number, error?: string, details?: string[], lap?: number, projections?: Array}}
    */
   submitPhaseStrategy(carId, raw) {
     const car = this.carById(carId);
@@ -187,24 +228,323 @@ export class Simulation {
       return { accepted: false, error: `not_in_window (phase: ${this.phase})` };
     }
     if (car.submittedStrategy) {
-      return { accepted: false, error: 'duplicate_strategy', details: ['strategy for this window was already submitted'] };
+      return { accepted: false, error: 'duplicate_strategy', details: ['plan for this window was already submitted'] };
     }
-    if (car.status === 'RETIRED') return { accepted: false, error: 'car_retired' };
+    if (car.status === 'RETIRED' || car.status === 'FINISHED') return { accepted: false, error: 'car_retired' };
 
+    if (isTacticEnvelope(raw)) {
+      const { plan, errors } = validateTacticEnvelope(raw);
+      if (errors.length) return { accepted: false, error: 'invalid_envelope', details: errors };
+      plan.source = 'team';
+      this._stampPlan(car, plan);
+      this._emit('tactics_proposed', {
+        carId: car.id,
+        name: car.name,
+        lap: this.currentLap,
+        source: 'team',
+        radio: plan.radio,
+        proposals: plan.proposals,
+      });
+      return {
+        accepted: true,
+        carId: car.id,
+        lap: this.currentLap,
+        // The server-stamped projections, so the team sees the numbers the
+        // cockpit shows (its own numbers are display-only, never simulated).
+        projections: plan.proposals.map((p) => ({ key: p.key, label: p.label, recommend: p.recommend, projection: p.projection })),
+      };
+    }
+
+    // Plain packet: exactly the pre-MCPG-62 behavior, normalized into the
+    // single-card plan shape so snapshot/cockpit/dossier share one shape.
     const { strategy, errors } = parseStrategy(raw);
     if (errors.length) return { accepted: false, error: 'invalid_strategy', details: errors };
 
-    car.strategy = strategy;
-    car.submittedStrategy = true;
-    // Pit request is consumed on the first tick of the next sim phase.
-    car.pitRequested = strategy.pitNow;
+    const plan = planFromPlainPacket(strategy);
+    plan.source = 'team';
+    this._stampPlan(car, plan);
     this._emit('strategy_submitted', {
       carId: car.id,
       name: car.name,
       lap: this.currentLap,
       strategy: { ...strategy },
     });
-    return { accepted: true, carId: car.id };
+    this._emit('tactics_proposed', {
+      carId: car.id,
+      name: car.name,
+      lap: this.currentLap,
+      source: 'team',
+      radio: null,
+      proposals: plan.proposals,
+    });
+    return { accepted: true, carId: car.id, lap: this.currentLap };
+  }
+
+  /** Normalize + projection-stamp a plan and attach it to the car. */
+  _stampPlan(car, plan) {
+    stampProjections(this._projectionCtx(car), plan);
+    car.teamPlan = plan;
+    car.submittedStrategy = true;
+    // Display during the window: the recommended packet is what autopilot
+    // would run; closeWindow() re-applies the actually chosen packet.
+    const rec = recommendedProposal(plan);
+    if (rec) car.strategy = { ...rec.packet };
+    if (rec?.packet.pitNow) car.pitRequested = true;
+  }
+
+  /** Context the projection heuristics read from authoritative state. */
+  _projectionCtx(car) {
+    return {
+      car,
+      standings: this.standings(),
+      totalCars: this.cars.length,
+      track: this.track,
+      currentLap: this.currentLap,
+      totalLaps: this.totalLaps,
+      lapsRemaining: Math.max(0, this.totalLaps - car.completedLaps),
+    };
+  }
+
+  /**
+   * Junior-strategist fallback (MCPG-62): once `juniorFallbackSeconds` of
+   * the window have elapsed, every active car that has no team plan yet is
+   * filled in by the scripted junior strategist, keeping autopilot
+   * meaningful (and the window closable) with zero LLMs connected. One-shot
+   * per window; deterministic per seed (dedicated juniorRng stream).
+   * The RaceSession run-loop calls this on each poll; tests may call it
+   * directly after `windowOpensAtMs` has been aged (see forceCloseWindow).
+   */
+  checkJuniorFallback() {
+    if (this.juniorFallbackSeconds <= 0) return;
+    if (this.phase !== 'strategy_window' || this._juniorFallbackDone) return;
+    if ((Date.now() - this.windowOpensAtMs) / 1000 < this.juniorFallbackSeconds) return;
+    this._juniorFallbackDone = true;
+    for (const car of this.cars) {
+      if (car.status !== 'RUNNING' && car.status !== 'PITTING') continue;
+      if (car.submittedStrategy) continue;
+      const plan = juniorTeamPlan(this._juniorView(car), this.juniorRng);
+      plan.source = 'junior';
+      this._stampPlan(car, plan);
+      this._emit('tactics_proposed', {
+        carId: car.id,
+        name: car.name,
+        lap: this.currentLap,
+        source: 'junior',
+        fallback: true,
+        radio: plan.radio,
+        proposals: plan.proposals,
+      });
+    }
+  }
+
+  /** buildView()-shaped facts for one car (the junior strategist's input). */
+  _juniorView(car) {
+    const standing = this.standings().find((s) => s.carId === car.id);
+    const myGap = standing?.gapToLeaderM ?? null;
+    let gapAhead = null;
+    let gapBehind = null;
+    if (myGap != null && standing) {
+      const ahead = this.standings().find((s) => s.position === standing.position - 1);
+      if (ahead) gapAhead = Math.max(0, myGap - (ahead.gapToLeaderM ?? 0));
+      const behind = this.standings().find((s) => s.position === standing.position + 1);
+      if (behind) gapBehind = (behind.gapToLeaderM ?? 0) - myGap;
+    }
+    return {
+      car: {
+        id: car.id,
+        status: car.status,
+        completedLaps: car.completedLaps,
+        gapToLeaderM: myGap,
+        gapToCarAheadM: gapAhead,
+        gapToCarBehindM: gapBehind,
+        tireWearPct: Math.round(car.tireWear * 10) / 10,
+        fuelKg: Math.round(car.fuelKg * 10) / 10,
+      },
+      race: {
+        phase: this.phase,
+        currentLap: this.currentLap,
+        totalLaps: this.totalLaps,
+        lapsRemaining: Math.max(0, this.totalLaps - car.completedLaps),
+        windowRemainingS: this.windowRemainingS(),
+        position: standing?.position ?? null,
+        gapToLeaderM: myGap,
+      },
+    };
+  }
+
+  /**
+   * Release every seat held by a driver session (its WS disconnected).
+   * A seat is bound to the lifetime of its driver connection: a dead
+   * connection cannot hold a car in MANUAL forever, so the seat returns to
+   * unclaimed (a fast reconnect re-claims it, claim-first; the autopilot
+   * default is restored for any car that loses its driver mid-window).
+   * @returns {number} number of seats released
+   */
+  releaseDriverSeats(driverSessionId) {
+    let released = 0;
+    for (const car of this.cars) {
+      if (car.driverSeat && car.driverSeat.sessionId === driverSessionId) {
+        car.driverSeat = null;
+        released += 1;
+        this._emit('autopilot_state', {
+          carId: car.id,
+          name: car.name,
+          lap: this.currentLap,
+          claimed: false,
+          mode: 'unclaimed',
+          change: 'release',
+        });
+      }
+    }
+    return released;
+  }
+
+  // ------------------------------------------------- driver seat (MCPG-62)
+
+  /**
+   * Claim the driver seat for a car (spectator WS). One driver per car,
+   * claim-first; idempotent for the same driver session. The seat starts in
+   * AUTOPILOT — the resting default state; tactic cards are how you
+   * disengage it.
+   */
+  claimDriverSeat(carId, driverSessionId) {
+    const car = this.carById(carId);
+    if (!car) return { accepted: false, error: 'unknown_car' };
+    if (this.phase !== 'strategy_window') {
+      return { accepted: false, error: `not_in_window (phase: ${this.phase})` };
+    }
+    const seat = car.driverSeat;
+    if (seat) {
+      if (seat.sessionId === driverSessionId) {
+        return { accepted: true, idempotent: true, carId, mode: seat.mode };
+      }
+      return { accepted: false, error: 'seat_taken' };
+    }
+    car.driverSeat = { sessionId: driverSessionId, mode: 'autopilot', action: null };
+    this._emit('autopilot_state', {
+      carId: car.id,
+      name: car.name,
+      lap: this.currentLap,
+      claimed: true,
+      mode: 'autopilot',
+      change: 'claim',
+    });
+    return { accepted: true, carId, mode: 'autopilot' };
+  }
+
+  /**
+   * Lock in one of the team's proposed tactics (by key) for THIS window.
+   * Counts as the car's submission; flips the seat to MANUAL for subsequent
+   * windows until resumeAutopilot. Locking the recommended proposal is the
+   * deliberate "trust the team" choice (mode `trusted` at close).
+   */
+  lockInTactic(carId, driverSessionId, proposalKey) {
+    const car = this.carById(carId);
+    if (!car) return { accepted: false, error: 'unknown_car' };
+    if (this.phase !== 'strategy_window') {
+      return { accepted: false, error: `not_in_window (phase: ${this.phase})` };
+    }
+    const seat = car.driverSeat;
+    if (!seat || seat.sessionId !== driverSessionId) {
+      return { accepted: false, error: seat ? 'not_your_seat' : 'seat_not_claimed' };
+    }
+    if (!car.teamPlan) return { accepted: false, error: 'no_plan', details: ['no team plan posted in this window to lock'] };
+    if (seat.action) return { accepted: false, error: 'already_acted', details: ['this seat already locked or overrode this window'] };
+    const proposal = car.teamPlan.proposals.find((p) => p.key === proposalKey);
+    if (!proposal) {
+      return {
+        accepted: false,
+        error: 'unknown_proposal',
+        details: [`proposal keys available: ${car.teamPlan.proposals.map((p) => p.key).join(', ')}`],
+      };
+    }
+    seat.action = { kind: 'lock', proposalKey: proposal.key };
+    seat.mode = 'manual';
+    car.submittedStrategy = true; // the driver's choice IS the car's submission
+    this._emit('driver_locked', {
+      carId: car.id,
+      name: car.name,
+      lap: this.currentLap,
+      proposalKey: proposal.key,
+      label: proposal.label,
+      trusted: proposal.recommend === true,
+    });
+    this._emit('autopilot_state', {
+      carId: car.id,
+      name: car.name,
+      lap: this.currentLap,
+      claimed: true,
+      mode: 'manual',
+      change: 'lock',
+    });
+    return { accepted: true, carId, mode: 'manual', trusted: proposal.recommend === true };
+  }
+
+  /**
+   * Override with a raw strategy packet (validates like any submission).
+   * Counts as the car's submission; flips the seat to MANUAL.
+   */
+  overrideTactic(carId, driverSessionId, packet) {
+    const car = this.carById(carId);
+    if (!car) return { accepted: false, error: 'unknown_car' };
+    if (this.phase !== 'strategy_window') {
+      return { accepted: false, error: `not_in_window (phase: ${this.phase})` };
+    }
+    const seat = car.driverSeat;
+    if (!seat || seat.sessionId !== driverSessionId) {
+      return { accepted: false, error: seat ? 'not_your_seat' : 'seat_not_claimed' };
+    }
+    if (seat.action) return { accepted: false, error: 'already_acted', details: ['this seat already locked or overrode this window'] };
+    const { strategy, errors } = parseStrategy(packet ?? {});
+    if (errors.length) return { accepted: false, error: 'invalid_packet', details: errors };
+    seat.action = { kind: 'override', packet: strategy };
+    seat.mode = 'manual';
+    car.submittedStrategy = true;
+    this._emit('driver_override', {
+      carId: car.id,
+      name: car.name,
+      lap: this.currentLap,
+      packet: { ...strategy },
+    });
+    this._emit('autopilot_state', {
+      carId: car.id,
+      name: car.name,
+      lap: this.currentLap,
+      claimed: true,
+      mode: 'manual',
+      change: 'override',
+    });
+    return { accepted: true, carId, mode: 'manual', packet: { ...strategy } };
+  }
+
+  /**
+   * Resume AUTOPILOT: the seat flips back (and, if the driver had already
+   * acted this window, the pending action is withdrawn — the team's plan
+   * runs this lap). Valid only while a strategy window is open.
+   */
+  resumeAutopilot(carId, driverSessionId) {
+    const car = this.carById(carId);
+    if (!car) return { accepted: false, error: 'unknown_car' };
+    if (this.phase !== 'strategy_window') {
+      return { accepted: false, error: `not_in_window (phase: ${this.phase})` };
+    }
+    const seat = car.driverSeat;
+    if (!seat || seat.sessionId !== driverSessionId) {
+      return { accepted: false, error: seat ? 'not_your_seat' : 'seat_not_claimed' };
+    }
+    seat.mode = 'autopilot';
+    const withdrew = seat.action != null;
+    seat.action = null;
+    this._emit('autopilot_state', {
+      carId: car.id,
+      name: car.name,
+      lap: this.currentLap,
+      claimed: true,
+      mode: 'autopilot',
+      change: 'resume',
+      withdrew,
+    });
+    return { accepted: true, carId, mode: 'autopilot', withdrew };
   }
 
   /** Seconds left in the current reactive window (wall-clock based). */
@@ -342,25 +682,151 @@ export class Simulation {
     return outcome;
   }
 
-  /** Called when the strategy window times out: cars without a submission
-   *  keep their previous strategy (or the default for lap 1). */
+  /**
+   * Resolve the window (MCPG-62) and close it.
+   *
+   * Per active car the chosen packet is: the driver's pending action
+   * (lock/override) if any — that choice IS the submission — otherwise the
+   * team plan's recommended packet (autopilot default, whether or not a
+   * driver sits in the seat). The resulting packet is what runs next lap;
+   * each car's resolution is logged and carried on `window_closed.decisions`
+   * for the dossier and the cockpit DEBRIEF strip.
+   */
   closeWindow() {
     if (this.phase !== 'strategy_window') throw new Error(`no window open (phase '${this.phase}')`);
+    const decisions = [];
     for (const car of this.cars) {
-      if (!car.submittedStrategy && car.status !== 'RETIRED') {
-        this._emit('strategy_defaulted', {
-          carId: car.id,
-          name: car.name,
-          lap: this.currentLap,
-          strategy: { ...car.strategy },
-        });
+      if (car.status === 'RETIRED' || car.status === 'FINISHED') continue;
+      const seat = car.driverSeat;
+      const action = seat ? seat.action : null;
+      if (seat) seat.action = null; // consumed: next window starts clean
+
+      let mode = null;
+      let source = null;
+      let key = null;
+      let label = null;
+      let packet = null;
+      let projection = null;
+
+      if (action?.kind === 'lock') {
+        const proposal = car.teamPlan?.proposals.find((p) => p.key === action.proposalKey) ?? null;
+        if (proposal) {
+          packet = { ...proposal.packet };
+          key = proposal.key;
+          label = proposal.label;
+          projection = proposal.projection ?? null;
+          source = 'driver_lock';
+          // Deliberate trust (recommended) vs a hand-picked alternative.
+          mode = proposal.recommend === true ? 'trusted' : 'overridden';
+        }
+      } else if (action?.kind === 'override') {
+        packet = { ...action.packet };
+        label = 'DRIVER OVERRIDE';
+        projection = this._projectionFor(car, packet);
+        source = 'driver_override';
+        mode = 'overridden';
       }
+
+      if (!packet && car.teamPlan) {
+        const rec = recommendedProposal(car.teamPlan);
+        packet = { ...(rec?.packet ?? car.teamPlan.proposals[0]?.packet ?? defaultStrategy()) };
+        key = rec?.key ?? null;
+        label = rec?.label ?? null;
+        projection = rec?.projection ?? null;
+        source = car.teamPlan.source; // 'team' | 'junior'
+        // No driver action: the seat state decides the mode. Unclaimed seats
+        // and autopilot seats are the auto_trusted path.
+        mode = !seat || seat.mode === 'autopilot' ? 'autopilot' : 'manual';
+      }
+
+      if (packet) {
+        car.strategy = packet;
+        car.submittedStrategy = true;
+        // Pit request is consumed on the first tick of the next sim phase.
+        car.pitRequested = packet.pitNow;
+        if (mode === 'autopilot') {
+          this._emit('auto_trusted', {
+            carId: car.id,
+            name: car.name,
+            lap: this.currentLap,
+            source,
+            key,
+            label,
+            projection,
+            seat: seat ? seat.mode : 'unclaimed',
+          });
+        } else {
+          this._emit('strategy_resolved', {
+            carId: car.id,
+            name: car.name,
+            lap: this.currentLap,
+            mode,
+            source,
+            key,
+            label,
+            strategy: { ...packet },
+            projection,
+          });
+        }
+      } else {
+        // No plan, no driver action (fallback disabled + no team), or the
+        // degenerate lock-without-plan case: pre-MCPG-62 default behavior.
+        if (!car.submittedStrategy) {
+          this._emit('strategy_defaulted', {
+            carId: car.id,
+            name: car.name,
+            lap: this.currentLap,
+            strategy: { ...car.strategy },
+          });
+        }
+        mode = mode ?? 'default';
+        source = source ?? 'default';
+      }
+
+      decisions.push({
+        carId: car.id,
+        name: car.name,
+        mode,
+        source,
+        key,
+        label,
+        packet: packet ? { ...packet } : null,
+        projection,
+      });
     }
     this.phase = 'simulation';
     this._emit('window_closed', {
       lap: this.currentLap,
       submitted: this.cars.filter((c) => c.submittedStrategy).map((c) => c.name),
       defaulted: this.cars.filter((c) => !c.submittedStrategy).map((c) => c.name),
+      decisions,
+    });
+  }
+
+  /** Projection for an arbitrary (driver) packet, using the shared heuristics. */
+  _projectionFor(car, packet) {
+    const plan = { radio: null, source: 'driver', proposals: [{ key: null, label: '', narrative: '', packet, recommend: true, confidence: null }] };
+    stampProjections(this._projectionCtx(car), plan);
+    return plan.proposals[0].projection ?? null;
+  }
+
+  /**
+   * MCPG-62 early close: every active car has a plan (team or junior)
+   * — or a driver override standing in for one — AND its seat is satisfied:
+   * unclaimed, autopilot, or already locked/overridden this window. An
+   * autopilot or unclaimed seat never holds the race to the full countdown;
+   * a MANUAL seat that has not acted yet must (the driver may still reach in).
+   */
+  canEarlyClose() {
+    if (!this.earlyCloseStrategyWindows) return false;
+    if (this.phase !== 'strategy_window') return false;
+    return this.cars.every((car) => {
+      if (car.status === 'RETIRED' || car.status === 'FINISHED') return true;
+      const seat = car.driverSeat;
+      const planReady = car.teamPlan != null || seat?.action?.kind === 'override';
+      if (!planReady) return false;
+      if (!seat || seat.mode === 'autopilot') return true;
+      return seat.action != null;
     });
   }
 
@@ -655,6 +1121,33 @@ export class Simulation {
       track: this.track.info(),
       cars,
       standings,
+      // MCPG-62 driver-seat + tactic-plan views (reconnect-safe: a driver
+      // (re)connecting reads the whole cockpit state from one snapshot).
+      driverSeats: Object.fromEntries(
+        this.cars.map((c) => [
+          c.id,
+          {
+            claimed: c.driverSeat != null,
+            mode: c.driverSeat ? c.driverSeat.mode : 'unclaimed',
+            actionKind: c.driverSeat?.action?.kind ?? null,
+          },
+        ]),
+      ),
+      tactics: this.phase === 'strategy_window'
+        ? Object.fromEntries(
+            this.cars
+              .filter((c) => c.teamPlan)
+              .map((c) => [
+                c.id,
+                {
+                  lap: this.currentLap,
+                  source: c.teamPlan.source,
+                  radio: c.teamPlan.radio,
+                  proposals: c.teamPlan.proposals,
+                },
+              ]),
+          )
+        : null,
     };
   }
 

@@ -17,8 +17,9 @@
  * opening the next session; default 60), PENDING_GRACE_SECONDS (claim window
  * per queued seat; default 30), VOTE_WINDOW_SECONDS (post-race track-voting
  * window; default 30, 0 disables), MCGP_SEASON_FILE (championship season
- * persistence file; default /logs/season.json on the log volume, MCPG-49).
- * Prints one JSON object per line on stdout: server_ready, every logged
+ * persistence file; default /logs/season.json on the log volume, MCPG-49),
+ * MCGP_DOSSIER_FILE (team dossiers; default /logs/team_dossiers.json on
+ * the log volume, MCPG-62). Prints one JSON object per line on stdout: server_ready, every logged
  * race event/decision, and race_complete with final standings (per race).
  *
  * Endpoints: /mcp (MCP agents), /spectate (WebSocket spectators),
@@ -33,6 +34,7 @@ import { createMcpHttpServer } from './http.js';
 import { createSpectatorHub, SPECTATE_PATH } from './spectator.js';
 import { createTrackFromEnv, NEXT_TRACK_FILE } from '../tracks.js';
 import { SEASON_FILE } from '../season.js';
+import { DOSSIER_FILE } from '../teamDossier.js';
 import { RaceOrchestrator } from './raceOrchestrator.js';
 
 const clientDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client');
@@ -60,6 +62,9 @@ const orchestrator = new RaceOrchestrator({
   nextTrackFile: NEXT_TRACK_FILE,
   // MCPG-49: the championship season persists on the same log volume.
   seasonFile: SEASON_FILE,
+  // MCPG-62: the team dossiers (autopilot vs driver choices) persist beside
+  // the season on the same log volume.
+  dossierFile: DOSSIER_FILE,
   totalLaps: Number(lapsArg),
   strategyWindowSeconds: Number(windowArg),
   // Own default (10 s, in the 8-15 s spec band) — deliberately NOT derived

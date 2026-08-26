@@ -7,6 +7,7 @@
 import { SpectatorConnection, CarPositionBuffer } from './spectatorClient.js';
 import { createSpectatorScene } from './scene.js';
 import { createUi } from './ui.js';
+import { createCockpit } from './cockpit.js';
 import { createMinimap } from './minimap.js';
 import { loadTrackDef } from './tracks.js';
 import { buildHarnessPrompt, HARNESS_PROMPT_REVISION } from './harnessPrompt.js';
@@ -19,6 +20,13 @@ const canvas = document.getElementById('scene');
 const ui = createUi();
 initFeaturesBadge(); // "NEW" badge -> /features (MCPG-35); self-contained
 const conn = new SpectatorConnection();
+
+// Driver seat (MCPG-62): this browser can claim a team's car; the cockpit
+// shows the team's plan and the driver's actions. Outbound is only the
+// four driver actions; the server resolves everything (server-authoritative).
+const cockpit = createCockpit({ send: (m) => conn.send(m) });
+// documented debug/automation handle for the cockpit (like __mcpGpScene)
+window.__mcpGpCockpit = cockpit;
 
 let scene = null;
 let sceneStarting = false;
@@ -108,7 +116,7 @@ function onSnapshot(msg) {
   }
 
   if (msg.phase === 'finished') {
-    ui.showFinishedOverlay(msg.standings, carNameById, msg.season); // MCPG-49
+    ui.showFinishedOverlay(msg.standings, carNameById, msg.season, msg.dossiers); // MCPG-49 + MCPG-62
   } else {
     // Rotation: the persistent server (MCPG-34) opens a new session — the
     // 'reset' event already cleared the scene; drop the finished overlay so
@@ -117,6 +125,7 @@ function onSnapshot(msg) {
   }
 
   ui.setPending(msg.pending);
+  cockpit.onSnapshot(msg); // MCPG-62: cockpit rehydrates from the snapshot
 }
 
 conn.addEventListener('reset', () => {
@@ -133,6 +142,7 @@ conn.addEventListener('reset', () => {
   for (const k of Object.keys(carNameById)) delete carNameById[k];
   for (const k of Object.keys(carColorById)) delete carColorById[k];
   ui.reset();
+  cockpit.reset(); // MCPG-62: seats are per-race
   // init() runs on the next snapshot (same track def is cached/loaded there)
 });
 
@@ -218,6 +228,19 @@ conn.addEventListener('status', (ev) => {
   // 'disconnected' during the results hold looks like a drop; keep the
   // finished overlay up (the snapshot feed resumes on reconnect).
   ui.setConnection(ev.detail);
+});
+
+// ---- driver seat (MCPG-62): discrete tactic/driver events + our acks ----
+conn.addEventListener('message', (ev) => {
+  const m = ev.detail;
+  if (m.type === 'tactics_proposed') return cockpit.onTacticsProposed(m);
+  if (m.type === 'autopilot_state') return cockpit.onAutopilotState(m);
+  if (m.type === 'driver_locked') return cockpit.onDriverLocked(m);
+  if (m.type === 'driver_override') return cockpit.onDriverOverride(m);
+  if (m.type === 'auto_trusted' || m.type === 'strategy_resolved') return cockpit.onResolved(m);
+  if (m.type && m.type.startsWith('driver_') && (m.type.endsWith('_ack') || m.type === 'driver_rejected')) {
+    return cockpit.onAck(m);
+  }
 });
 
 // ---- welcome-screen harness prompt (MCPG-36) ----

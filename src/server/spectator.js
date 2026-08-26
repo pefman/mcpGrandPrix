@@ -24,6 +24,17 @@
  * window closes the hub broadcasts { type: 'vote_result', ... } and finalizes
  * (the next race resets it as usual).
  *
+ * Driver seat (MCPG-62): the same WS pattern extends to a new browser role.
+ * A driver sends { type: 'driver_claim' | 'lock_in' | 'override' |
+ * 'resume_autopilot', carId, ... } — identity is the WS session (one seat
+ * per car, claim-first; the seat + autopilot state ride in every snapshot
+ * for reconnect safety). The hub routes them to the session and answers the
+ * acting client with an ack/reject; the server also BROADCASTS the discrete
+ * events (tactics_proposed, driver_locked, driver_override, autopilot_state,
+ * auto_trusted, strategy_resolved) so every client's cockpit updates live.
+ * Unlike votes, driver actions affect the race: the simulation resolves the
+ * window around them (server-authoritative, exactly like a team submission).
+ *
  * The hub also runs a protocol-level heartbeat (WS ping every 30 s, dead
  * sockets terminated) so the client set stays clean.
  *
@@ -41,6 +52,9 @@ export const SPECTATE_PATH = '/spectate';
  * (re)connecting client needs no history, just the next one.
  */
 export function buildSnapshotMessage(session, spectatorCount) {
+  // session.state() is self-contained for both flavors (bare session and
+  // orchestrator): it already carries pending/season and, since MCPG-62, the
+  // current race's team dossiers.
   const state = session.state();
   return JSON.stringify({
     type: 'snapshot',
@@ -101,6 +115,15 @@ export function createSpectatorHub(httpServer, initialSession, {
       if (client.readyState === WebSocket.OPEN) client.send(msg);
     }
   };
+
+  // MCPG-62: tactic/driver events the session wants pushed immediately
+  // (bound per session in reset(); snapshots carry the same state for
+  // (re)connectors, so no replay log is needed).
+  const broadcastExternal = (event) => {
+    sendToAll(JSON.stringify(event));
+  };
+  // Bare single-session servers never call reset(): bind the sink up front.
+  if (typeof initialSession?.setHubSink === 'function') initialSession.setHubSink(broadcastExternal);
 
   const sendFinalIfDue = () => {
     const s = getSession();
@@ -204,10 +227,46 @@ export function createSpectatorHub(httpServer, initialSession, {
         ws.send(JSON.stringify(res.accepted
           ? { type: 'vote_ack', trackId: res.trackId, totalVotes: res.totalVotes }
           : { type: 'vote_rejected', error: res.error }));
+      } else if (msg && msg.type === 'driver_claim' && typeof msg.carId === 'number') {
+        // MCPG-62: claim the driver seat for a car (one per car, claim-first;
+        // idempotent for the same WS session). The seat starts in AUTOPILOT.
+        const res = getSession().claimDriverSeat(msg.carId, clientIds.get(ws));
+        ws.send(JSON.stringify(res.accepted
+          ? { type: 'driver_claim_ack', carId: res.carId ?? msg.carId, mode: res.mode, idempotent: res.idempotent === true }
+          : { type: 'driver_rejected', action: 'driver_claim', carId: msg.carId, error: res.error, details: res.details }));
+      } else if (msg && msg.type === 'lock_in' && typeof msg.carId === 'number' && typeof msg.proposalKey === 'string') {
+        // MCPG-62: lock in one of the team's proposed tactics for this
+        // window (counts as the car's submission; flips the seat to MANUAL).
+        const res = getSession().lockInTactic(msg.carId, clientIds.get(ws), msg.proposalKey);
+        ws.send(JSON.stringify(res.accepted
+          ? { type: 'driver_lock_ack', carId: res.carId, proposalKey: msg.proposalKey, mode: res.mode, trusted: res.trusted === true }
+          : { type: 'driver_rejected', action: 'lock_in', carId: msg.carId, error: res.error, details: res.details }));
+      } else if (msg && msg.type === 'override' && typeof msg.carId === 'number' && msg.packet && typeof msg.packet === 'object') {
+        // MCPG-62: override with a raw strategy packet for this window.
+        const res = getSession().overrideTactic(msg.carId, clientIds.get(ws), msg.packet);
+        ws.send(JSON.stringify(res.accepted
+          ? { type: 'driver_override_ack', carId: res.carId, mode: res.mode }
+          : { type: 'driver_rejected', action: 'override', carId: msg.carId, error: res.error, details: res.details }));
+      } else if (msg && msg.type === 'resume_autopilot' && typeof msg.carId === 'number') {
+        // MCPG-62: flip the seat back to AUTOPILOT (the resting default).
+        const res = getSession().resumeAutopilot(msg.carId, clientIds.get(ws));
+        ws.send(JSON.stringify(res.accepted
+          ? { type: 'driver_resume_ack', carId: res.carId, mode: res.mode, withdrew: res.withdrew === true }
+          : { type: 'driver_rejected', action: 'resume_autopilot', carId: msg.carId, error: res.error, details: res.details }));
       }
     });
 
     ws.on('close', () => {
+      const driverId = clientIds.get(ws);
+      // A dead driver connection cannot hold a car in MANUAL forever: release
+      // its seats (the autopilot default is restored; a fast reconnect
+      // re-claims them, claim-first). Logged + broadcast via autopilot_state.
+      if (driverId && typeof getSession().releaseDriverSeats === 'function') {
+        const released = getSession().releaseDriverSeats(driverId);
+        if (released > 0) {
+          onEvent({ type: 'driver_seats_released', driver: driverId, released, raceId: getSession().raceId ?? null });
+        }
+      }
       clients.delete(ws);
       clientIds.delete(ws);
       onEvent({ type: 'spectator_disconnected', spectators: clients.size });
@@ -225,6 +284,10 @@ export function createSpectatorHub(httpServer, initialSession, {
     finishedNotified = false;
     votingActive = false;
     session = getSession(); // rebind to the new session (MCPG-34)
+    // MCPG-62: route the new session's tactic/driver events to the clients
+    // (tactics_proposed / driver_locked / driver_override / autopilot_state
+    // / auto_trusted / strategy_resolved — pushed immediately).
+    if (typeof session?.setHubSink === 'function') session.setHubSink(broadcastExternal);
     const hello = buildHelloMessage(session);
     const snap = buildSnapshotMessage(session, clients.size);
     sendToAll(hello);

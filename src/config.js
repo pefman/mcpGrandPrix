@@ -13,12 +13,22 @@
  *   VOTE_WINDOW_SECONDS — post-race spectator track-voting window (default
  *                30). The winner becomes the next race's track; persisted in
  *                the log volume so a restart cannot lose it. (MCPG-28)
+ *   EARLY_CLOSE_STRATEGY_WINDOWS — "1"/"0" (default "1"): a strategy window
+ *                closes as soon as every active car has a plan (team or
+ *                junior fallback) AND its driver seat is satisfied (unclaimed,
+ *                autopilot, or already locked/overridden) (MCPG-62).
  */
 function envInt(name, fallback) {
   const raw = process.env[name];
   if (raw == null || raw === '') return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function envBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  return !(raw === '0' || raw === 'false' || raw === 'off');
 }
 
 export const CONFIG = {
@@ -49,6 +59,18 @@ export const CONFIG = {
     // becomes the next race's track (persisted; 0 disables the window and
     // falls back to deterministic rotation).
     voteWindowSeconds: envInt('VOTE_WINDOW_SECONDS', 30),
+    // MCPG-62: early strategy-window close. The window ends the moment every
+    // active car has a plan AND its driver seat is satisfied — autopilot and
+    // unclaimed seats never hold the race hostage to the full countdown.
+    earlyCloseStrategyWindows: envBool('EARLY_CLOSE_STRATEGY_WINDOWS', true),
+  },
+
+  tactics: {
+    // MCPG-62: if a car's team posts no plan within this many seconds of the
+    // window opening, the scripted junior strategist fills in (keeps
+    // autopilot meaningful with zero LLMs connected). 0 disables the fallback.
+    juniorFallbackSeconds: 10,
+    maxProposals: 3, // max tactic proposals per team plan (envelope)
   },
 
   reactive: {
