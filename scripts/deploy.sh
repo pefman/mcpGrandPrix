@@ -467,6 +467,9 @@ if [[ $SCRIPTED_RACE == 1 ]]; then
     exit 0
   fi
   run_scripted_race
+  # Always exit here: --scripted-race never falls through into the
+  # deploy/recover logic below (no deploy, no rebuild — its contract).
+  exit 0
 fi
 
 new_sha="$(git ls-remote "$REPO_URL" refs/heads/main | awk '{print $1}')"
