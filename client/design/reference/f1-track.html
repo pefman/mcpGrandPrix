@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<!--
+  Canonical art-direction reference for the spectator track rendering
+  (MCPG-64), authored by Peter. Single-file Three.js demo: one
+  InstancedMesh of voxels, orbit controls, FPS counter. Kept byte-faithful
+  apart from this note; it uses a CDN import map on purpose -- the live
+  client uses client/vendor/three.module.js instead.
+-->
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voxel F1 Circuit</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#87ceeb;font-family:'Segoe UI',monospace}
+  .panel{position:fixed;background:rgba(8,12,18,.78);border:1px solid rgba(255,255,255,.12);
+    border-radius:10px;color:#eef1f5;backdrop-filter:blur(6px);box-shadow:0 6px 24px rgba(0,0,0,.35)}
+  #hint{bottom:14px;left:50%;transform:translateX(-50%);padding:6px 14px;font-size:12px;color:#cfd6dd}
+  #fps{bottom:14px;right:14px;padding:4px 10px;font-size:11px;color:#cfd6dd;font-variant-numeric:tabular-nums}
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="hint" class="panel">drag: orbit &nbsp;|&nbsp; scroll: zoom &nbsp;|&nbsp; right-drag: pan</div>
+<div id="fps" class="panel">— fps</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const CONFIG = {
+  W: 13,
+  N: 520,
+  CURB_WIDTH: 1.6,
+  ASPHALT_A: 0x3a3d42,
+  ASPHALT_B: 0x33363b,
+  PIT_LANE_Z: -113,
+  ISLAND: { cx: -10, cz: -70, rx: 185, rz: 130 },
+};
+
+let seed = 42;
+function rnd() {
+  seed = (seed * 16807) % 2147483647;
+  return seed / 2147483647;
+}
+let iseed = 7;
+const irnd = () => {
+  iseed = (iseed * 16807) % 2147483647;
+  return iseed / 2147483647;
+};
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 700, 1900);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 1, 4000);
+camera.position.set(250, 185, 330);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(-10, -20, -75);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 60;
+controls.maxDistance = 900;
+controls.maxPolarAngle = Math.PI/2.02;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x4a7a3a, 0.85));
+const sun = new THREE.DirectionalLight(0xfff2d9, 1.4);
+sun.position.set(180, 260, 120);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-320,right:320,top:320,bottom:-320,far:900});
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+
+const voxels = [];
+const col = new THREE.Color();
+function voxel(px, py, pz, sx, sy, sz, color, ry = 0) {
+  voxels.push({ px, py, pz, sx, sy, sz, color: new THREE.Color(color), ry });
+}
+
+const curve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-120,0,-130),
+  new THREE.Vector3(  55,0,-130),
+  new THREE.Vector3(  98,0,-108),
+  new THREE.Vector3( 112,0, -68),
+  new THREE.Vector3(  92,0, -30),
+  new THREE.Vector3(  48,0, -18),
+  new THREE.Vector3(  26,0, -46),
+  new THREE.Vector3(   0,0, -58),
+  new THREE.Vector3( -22,0, -36),
+  new THREE.Vector3( -46,0, -14),
+  new THREE.Vector3( -82,0, -22),
+  new THREE.Vector3(-108,0, -48),
+  new THREE.Vector3(-126,0, -88),
+], true, 'catmullrom', 0.5);
+
+const W = CONFIG.W;
+const N = CONFIG.N;
+
+const LEN = curve.getLength();
+const pts = [], tans = [];
+for(let i=0;i<N;i++){
+  const u=i/N;
+  pts.push(curve.getPointAt(u));
+  tans.push(curve.getTangentAt(u));
+}
+
+const curv = [];
+for(let i=0;i<N;i++){
+  const a=tans[(i-2+N)%N], b=tans[(i+2)%N];
+  curv.push(Math.acos(THREE.MathUtils.clamp(a.dot(b),-1,1)));
+}
+
+for(let i=0;i<N;i++){
+  const p=pts[i], t=tans[i];
+  const ry=Math.atan2(t.x,t.z)+Math.PI/2;
+  const segLen=(LEN/N)*1.08;
+  voxel(p.x,0.4,p.z, segLen,0.8,W, i%2? 0x3a3d42 : 0x33363b, ry);
+  const n=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),t).normalize();
+  if(i%6===0){
+    voxel(p.x+n.x*(W/2+2.4),0.15,p.z+n.z*(W/2+2.4), segLen*6,0.3,1, 0xbfc3c9, ry);
+    voxel(p.x-n.x*(W/2+2.4),0.15,p.z-n.z*(W/2+2.4), segLen*6,0.3,1, 0xbfc3c9, ry);
+  }
+}
+
+for(let i=0;i<N;i++){
+  if(curv[i]>0.09){
+    const p=pts[i], t=tans[i];
+    const n=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),t).normalize();
+    const c=(Math.floor(i/2)%2)?0xff2d1f:0xf2f2f2;
+    voxel(p.x+n.x*(W/2+0.8),0.65,p.z+n.z*(W/2+0.8), (LEN/N)*1.1,0.5,1.6, c, Math.atan2(t.x,t.z)+Math.PI/2);
+    voxel(p.x-n.x*(W/2+0.8),0.65,p.z-n.z*(W/2+0.8), (LEN/N)*1.1,0.5,1.6, c, Math.atan2(t.x,t.z)+Math.PI/2);
+    if(curv[i]>0.16 && i%3===0){
+      const g=p.clone().addScaledVector(n,-(W/2+7));
+      voxel(g.x,0.2,g.z, 16,0.4,16, 0xe8cf8f);
+    }
+  }
+}
+
+for(let i=0;i<N;i+=2){
+  const p=pts[i], t=tans[i];
+  const n=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),t).normalize();
+  const ry=Math.atan2(t.x,t.z)+Math.PI/2;
+  if(i%4===0){
+    voxel(p.x,0.85,p.z, (LEN/N)*1.6, 0.04, 0.3, 0xf2f2f2, ry);
+  }
+}
+
+function distToTrack(x,z){
+  let d=Infinity;
+  for(let i=0;i<N;i+=4){
+    const dx=pts[i].x-x, dz=pts[i].z-z;
+    d=Math.min(d,dx*dx+dz*dz);
+  }
+  return Math.sqrt(d);
+}
+
+const CX = CONFIG.ISLAND.cx, CZ = CONFIG.ISLAND.cz;
+const RX = CONFIG.ISLAND.rx, RZ = CONFIG.ISLAND.rz;
+function inIsland(x,z,f=1){
+  const dx=(x-CX)/(RX*f), dz=(z-CZ)/(RZ*f);
+  return dx*dx+dz*dz<=1;
+}
+
+for(let gx=-190;gx<=170;gx+=10){
+  for(let gz=-195;gz<=55;gz+=10){
+    const x=gx+5, z=gz+5;
+    if(!inIsland(x,z)) continue;
+    voxel(x,-0.4,z, 9.8,0.8,9.8, irnd()<0.5? 0x6fd637:0x63cc2f);
+    voxel(x,-4.7,z, 9.8,7.8,9.8, 0x8a5a2b);
+    if(!inIsland(x,z,0.94)){
+      const j=irnd();
+      voxel(x+(irnd()-0.5)*3, -1.8-j*1.5, z+(irnd()-0.5)*3,
+        9.6,2.2+j*2,9.6, j<0.5? 0x6fd637:0x63cc2f);
+    }
+  }
+}
+
+for(let gx=-190;gx<=170;gx+=12){
+  for(let gz=-195;gz<=55;gz+=12){
+    const x=gx+6, z=gz+6;
+    const dx=(x-CX)/RX, dz=(z-CZ)/RZ;
+    const r=dx*dx+dz*dz;
+    if(r>=0.92) continue;
+    const depth=(1-Math.sqrt(Math.max(0,r)))*95*(0.75+irnd()*0.5);
+    const h=depth+10;
+    const v=irnd();
+    const c=v<0.12? 0x9aa0a8 : v<0.3? 0x6e4423 : 0x8a5a2b;
+    voxel(x,-8.6-h/2, z, 11.6,h,11.6, c);
+    if(irnd()<0.09)
+      voxel(x+(irnd()-0.5)*10, -10-h, z+(irnd()-0.5)*10, 5,9,5, 0x7a4f28);
+  }
+}
+
+function nearestU(x,z){
+  let bi=0, bd=Infinity;
+  for(let i=0;i<N;i++){
+    const d=(pts[i].x-x)**2+(pts[i].z-z)**2;
+    if(d<bd){bd=d;bi=i;}
+  }
+  return bi/N;
+}
+
+const startU=nearestU(-20,-130);
+const sp=curve.getPointAt(startU);
+const st=curve.getTangentAt(startU);
+const sn=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),st).normalize();
+const sry=Math.atan2(st.x,st.z)+Math.PI/2;
+
+voxel(sp.x,0.62,sp.z, 1.6,0.24,W, 0xf2f2f2, sry);
+for(let r=0;r<2;r++)
+  for(let c=0;c<Math.floor(W/1.6);c++)
+    if((r+c)%2===0){
+      const off=-W/2+c*1.6+0.8;
+      voxel(sp.x+sn.x*off+st.x*(r-0.5)*1.6, 0.78, sp.z+sn.z*off+st.z*(r-0.5)*1.6,
+        1.6,0.06,1.6, 0x111111, sry);
+    }
+
+for(let s=0;s<8;s++){
+  for(let l=0;l<2;l++){
+    const gu=((startU-(30+s*8)/LEN)%1+1)%1;
+    const gp=curve.getPointAt(gu);
+    const off=l? -3.25: 3.25;
+    voxel(gp.x+sn.x*off, 0.85, gp.z+sn.z*off, 4.5,0.1,2.4, 0xf2f2f2, sry);
+  }
+}
+
+const startLights = [];
+const startLightMaterials = [];
+{
+  for(const side of [-1,1]){
+    voxel(sp.x+sn.x*side*(W/2+1.5), 5, sp.z+sn.z*side*(W/2+1.5), 1.6,11,1.6, 0x2b2e33, sry);
+  }
+  voxel(sp.x, 10.5, sp.z, W+6, 1.6, 2.2, 0x22252a, sry);
+  voxel(sp.x, 9.2, sp.z, W+2, 1.4, 2.6, 0xe8412f, sry);
+  for(let i=0;i<5;i++){
+    for(const dz of [-0.7,0.7]){
+      const mat = new THREE.MeshStandardMaterial({color:0x550000, emissive:0x330000});
+      const m = new THREE.Mesh(new THREE.BoxGeometry(1,1,0.5), mat);
+      m.position.set(sp.x+st.x*(i-2)*3+sn.x*dz, 10.5, sp.z+st.z*(i-2)*3+sn.z*dz);
+      m.rotation.y = sry;
+      m.castShadow = true;
+      scene.add(m);
+      startLights.push(m);
+      startLightMaterials.push(mat);
+    }
+  }
+}
+
+const PIT_LANE_Z = CONFIG.PIT_LANE_Z;
+const boxX=i=>-100+i*17;
+
+for(let x=-112;x<42;x+=6){
+  voxel(x+3, 0.35, PIT_LANE_Z, 5.8,0.7,7, 0x4a4d52);
+}
+voxel(-112,0.35,-121, 10,0.7,15, 0x4a4d52);
+voxel(38,0.35,-121, 10,0.7,15, 0x4a4d52);
+for(let i=0;i<8;i++){
+  const bx=boxX(i);
+  voxel(bx,0.74,PIT_LANE_Z, 13,0.06,2.2, 0xf2f2f2);
+  voxel(bx,0.3,-104, 15,0.6,12, 0xbfc3c9);
+  voxel(bx,2.4,-109.2, 15,4.4,0.9, i%2? 0xe8e8ea:0xd8dade);
+  for(const px of [-6.5,6.5]) for(const pz of [-98.8,-109.2])
+    voxel(bx+px,3.2,pz, 1,6.4,1, 0x55585e);
+  voxel(bx,6.7,-104, 16.4,0.8,13, 0x2b2e33);
+  voxel(bx,7.4,-104, 16.4,0.6,1.2, i%2? 0xff2d1f:0xe8e8ea);
+  const crew=[0xff2d1f,0x1a56c4,0xf2c53f];
+  for(let m=0;m<3;m++){
+    const mx=bx-4+m*4;
+    voxel(mx,1,-99.6, 0.9,2,0.9, crew[m]);
+    voxel(mx,2.35,-99.6, 0.7,0.7,0.7, 0xf2c53f);
+  }
+}
+
+function curvedStand(u0, arcLen, side){
+  const rows=7, step=2, nSteps=Math.floor(arcLen/step);
+  const up=new THREE.Vector3(0,1,0);
+  const seatCols=[0xe84a3f,0x3f7fe8,0xf2c53f,0x49c15b,0xf2f2f2];
+  for(let r=0;r<rows;r++){
+    for(let sIdx=0;sIdx<=nSteps;sIdx++){
+      const u=((u0+(sIdx*step-arcLen/2)/LEN)%1+1)%1;
+      const p=curve.getPointAt(u);
+      const t=curve.getTangentAt(u);
+      const n=new THREE.Vector3().crossVectors(up,t).normalize();
+      const ry=Math.atan2(t.x,t.z)+Math.PI/2;
+      const d=W/2+11+r*1.9;
+      const x=p.x+n.x*side*d, z=p.z+n.z*side*d;
+      const h=1.4+r*1.2;
+      voxel(x,h/2,z, step*0.95,h,1.9, r%2?0xd8d8dc:0xbfc3c9, ry);
+      if(rnd()<0.7)
+        voxel(x,h+0.5,z, 1.1,1.1,1.1, seatCols[Math.floor(rnd()*5)], ry);
+    }
+  }
+  const cd=W/2+11+(rows-1)*1.9/2;
+  for(let sIdx=0;sIdx<=nSteps;sIdx++){
+    const u=((u0+(sIdx*step-arcLen/2)/LEN)%1+1)%1;
+    const p=curve.getPointAt(u);
+    const t=curve.getTangentAt(u);
+    const n=new THREE.Vector3().crossVectors(up,t).normalize();
+    const ry=Math.atan2(t.x,t.z)+Math.PI/2;
+    voxel(p.x+n.x*side*cd, 12.6, p.z+n.z*side*cd, step*1.7,0.7,16.4, 0x2b2e33, ry);
+    voxel(p.x+n.x*side*cd, 12.1, p.z+n.z*side*cd, step*1.4,0.4,16.4, 0x3a3e44, ry);
+    if(sIdx%6===0)
+      voxel(p.x+n.x*side*(W/2+10), 6, p.z+n.z*side*(W/2+10), 1,12,1, 0x55585e, ry);
+  }
+}
+curvedStand(nearestU(-40,-130), 90, 1);
+curvedStand(nearestU(112,-68), 55, -1);
+curvedStand(nearestU(-70,-18), 60, 1);
+
+function tireWallAt(u,n){
+  const p=curve.getPointAt(u), t=curve.getTangentAt(u);
+  const t2=curve.getTangentAt((u+0.02)%1);
+  const leftTurn=(t.z*t2.x - t.x*t2.z)>0;
+  const side=leftTurn? -1: 1;
+  const nn=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),t).normalize();
+  const ry=Math.atan2(t.x,t.z)+Math.PI/2;
+  for(let k=0;k<n;k++){
+    const x=p.x+nn.x*side*(W/2+11+k*2.2);
+    const z=p.z+nn.z*side*(W/2+11+k*2.2);
+    for(let h=0;h<2+(k%2);h++)
+      voxel(x,0.8+h*1.4,z, 2,1.3,3.4, k%2? 0x1c1e22:0xd8dade, ry);
+  }
+}
+tireWallAt(nearestU(112,-68), 6);
+tireWallAt(nearestU(26,-46), 5);
+tireWallAt(nearestU(0,-58), 5);
+tireWallAt(nearestU(-126,-88), 6);
+tireWallAt(nearestU(92,-30), 5);
+
+for(let i=0;i<N;i+=6){
+  const p=pts[i], t=tans[i];
+  const n=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),t).normalize();
+  const a=tans[(i-3+N)%N], b=tans[(i+3)%N];
+  const leftTurn=(a.z*b.x - a.x*b.z)>0;
+  for(const side of [-1,1]){
+    if(curv[i]>0.11 && side===(leftTurn? 1:-1)) continue;
+    if(distToTrack(p.x+n.x*side*(W/2+9), p.z+n.z*side*(W/2+9)) < 8) continue;
+    voxel(p.x+n.x*side*(W/2+9), 1.1, p.z+n.z*side*(W/2+9),
+      (LEN/N)*4.6, 2.2, 0.7, i%36<18? 0xe8e8ea : 0xff2d1f,
+      Math.atan2(t.x,t.z)+Math.PI/2);
+  }
+}
+
+function floodlight(cx,cz){
+  voxel(cx, 14, cz, 1.4,28,1.4, 0x9aa0a8);
+  for(let r=0;r<2;r++)
+    for(let c=0;c<4;c++)
+      voxel(cx-3+c*2, 29+r*2, cz, 1.6,1.6,1.2, 0xfffbe0);
+}
+floodlight(-100,-158);
+floodlight(60,-158);
+floodlight(-130,-20);
+floodlight(120,-40);
+
+let planted=0, tries=0;
+while(planted<90 && tries<4000){
+  tries++;
+  const x=-175+rnd()*310, z=-185+rnd()*215;
+  if(!inIsland(x,z,0.96)) continue;
+  const d=distToTrack(x,z);
+  if(d<26 || (x>-135&&x<60&&z>-175&&z<-85)) continue;
+  let blocked=false;
+  const excl = [
+    [130,-68,32],[-70,12,34],[-45,-156,38],
+    [-40,-130,55],[112,-68,35],[-70,-18,40],
+  ];
+  for(const [ex,ez,er] of excl){
+    if((x-ex)**2+(z-ez)**2<er*er){blocked=true;break;}
+  }
+  if(blocked) continue;
+  const h=2+rnd()*3;
+  const trunkH=4+h;
+  voxel(x, trunkH/2, z, 2.2,trunkH,2.2, 0x7a4a22);
+  const leaf=[0x35c04a,0x3fd455,0x2fb542][Math.floor(rnd()*3)];
+  for(let dx=-1;dx<=1;dx++)for(let dy=0;dy<=1;dy++)for(let dz=-1;dz<=1;dz++){
+    if(Math.abs(dx)+Math.abs(dy)+Math.abs(dz)>2 || rnd()<0.2) continue;
+    voxel(x+dx*2.4, trunkH+1.6+dy*2.4, z+dz*2.4, 3.6,3.6,3.6, leaf);
+  }
+  planted++;
+}
+
+for(const [bx,bz] of [[-60,-95],[-10,-90],[20,-100]]){
+  voxel(bx,1,bz, 6,2,6, 0xe8cf8f);
+  voxel(bx-2,2.4,bz, 1.6,0.8,4, 0xe8e8ea);
+}
+
+const drsBoards=[[70,-122,0.4],[-95,-118,-0.2],[-40,-30,2.4]];
+for(const [dx,dz,r] of drsBoards){
+  voxel(dx,4,dz, 0.8,8,0.8, 0x9aa0a8);
+  voxel(dx,9,dz, 10,3,0.6, 0x1a56c4, r);
+  voxel(dx+0.4,9,dz+0.4, 6,1,0.5, 0xf2f2f2, r);
+}
+
+const inst=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1),
+  new THREE.MeshLambertMaterial(), voxels.length);
+inst.castShadow=true;
+inst.receiveShadow=true;
+const mtx=new THREE.Matrix4(), q=new THREE.Quaternion(), eul=new THREE.Euler();
+voxels.forEach((v,i)=>{
+  eul.set(0,v.ry,0);
+  q.setFromEuler(eul);
+  mtx.compose(new THREE.Vector3(v.px,v.py,v.pz), q, new THREE.Vector3(v.sx,v.sy,v.sz));
+  inst.setMatrixAt(i,mtx);
+  inst.setColorAt(i,v.color);
+});
+scene.add(inst);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(2400, 2400),
+  new THREE.MeshLambertMaterial({color:0x4a6b3a})
+);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -8.7;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const clock=new THREE.Clock();
+let lastFrame=0, startT=0;
+let fpsAccum = 0, fpsFrames = 0, fpsLast = 0;
+const fpsEl = document.getElementById('fps');
+
+function animate(now){
+  requestAnimationFrame(animate);
+  if(now-lastFrame < 1000/60 - 1) return;
+  const dt = now - (lastFrame || now);
+  lastFrame=now;
+  const t = clock.getElapsedTime();
+  controls.update();
+  renderer.render(scene,camera);
+
+  fpsFrames++;
+  fpsAccum += dt;
+  if(fpsAccum >= 500){
+    fpsEl.textContent = Math.round(1000 * fpsFrames / fpsAccum) + ' fps';
+    fpsAccum = 0; fpsFrames = 0;
+  }
+
+  const phase = (t - startT) % 6;
+  for(let i=0;i<5;i++){
+    const lit = phase >= i*0.5 && phase < 4.0;
+    const off = phase >= 4.0;
+    const mat = startLightMaterials[i*2];
+    if(off){
+      mat.emissive.setHex(0x33ff66);
+      mat.emissiveIntensity = 1.5;
+    } else if(lit){
+      mat.emissive.setHex(0xff2211);
+      mat.emissiveIntensity = 1.0;
+    } else {
+      mat.emissive.setHex(0x330000);
+      mat.emissiveIntensity = 1.0;
+    }
+  }
+}
+animate();
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

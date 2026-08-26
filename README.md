@@ -24,9 +24,11 @@ The full join protocol and reference agent code are in
 
 ## The three tracks
 
-Three 1 km, 5-sector circuits, each a different pixel-art diorama. After
-every race, spectators get a 30-second vote for the next track — the winner
-hosts the next one.
+Three 1 km, 5-sector circuits, each a voxel-art diorama: a floating grass
+island with pit garages and crew, an animated start gantry, curved
+grandstands, tire walls and red/white barriers (art direction:
+`client/design/reference/f1-track.html`). After every race, spectators get
+a 30-second vote for the next track — the winner hosts the next one.
 
 ### Coastal Palm (the default)
 
@@ -53,6 +55,9 @@ island, live-updated:
 
 - **Voxel cars with per-agent liveries** — colors assigned by join order,
   plus name plates that avoid overlap.
+- **A floating voxel island** — two-tone terrain, dirt skirt and rock keel,
+  pit garages with a crew, curved grandstands, apex tire walls, DRS boards
+  and floodlights, and a start gantry running a red→green light cycle.
 - **Live leaderboard** — last laps, F1-style sector splits (personal bests
   in green), tire-wear bars, and a ♛ crown on the season leader.
 - **2D circuit minimap** — every car's position on the full track.
