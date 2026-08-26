@@ -49,6 +49,7 @@ client) and pinned by `test/trackContract.test.js`.
 | `theme` | object | **yes** | See theme reference. Unknown keys → warn + ignore. |
 | `props` | `{type, ...}[]` | no (default none) | Hand-placed decorations from the v1 catalog below. Unknown `type` → skip + warn. |
 | `scatter` | object \| null | no | `{type, count?, seed?, minOffsetM?}` — deterministic seeded placement inside the circuit bbox, kept clear of road (+`minOffsetM`, default 14 m) and water. `count` default 0; `seed` any int (same seed ⇒ same layout); `type` from the catalog. |
+| `scenery` | object \| null | no | Voxel-dressing overrides (MCPG-64): `{version?, island?: {marginM}, garages?, stands[], tireWalls[], drs[], floodlights[], scatterExclusions[]}`. Every field optional — omitted pieces fall back to automatic placement derived from the circuit geometry (see docs/track-format.md for the per-field reference; malformed entries are skipped individually, never fatal). |
 | `features` | `string[]` | no (default none) | Capability flags gating optional engine behavior (reserved examples: `"elevation"`, `"weather-zones"`). An older engine warns + ignores flags it doesn't implement. |
 
 Soft budget: hand-placed props incl. scatter count ≲ 400 (warn above; scatter
@@ -104,6 +105,35 @@ capability flags (`features`).
 - Minimap drawing (fed from the same fitted curve)
 
 No engine logic in map files, ever.
+
+## Engine-interpreted features (derived, not declared)
+
+The scene implements a fixed set of circuit features on **every** map.
+They are not schema fields — the engine derives them from the geometry
+(`client/js/scenery.js`, `track.js`), so a bare map with only the required
+fields still renders the complete look. This section is the source of
+truth for what a map author gets for free, what they can tune, and what
+they cannot touch. Design work builds against this list.
+
+| Feature | What drives it | Author control via map data |
+|---|---|---|
+| Floating island (two-tone grass slab + dirt skirt + rock keel) | Circuit bbox + `scenery.island.marginM` (default 85 m) | Footprint size only (`marginM`); shape/colors are engine-fixed |
+| Two-tone asphalt strips | `theme.road` (`base`, `spot`, `tileM`) + curve geometry | Colors and tile scale; strip pattern is engine-drawn |
+| Curvature curbs | `theme.curb` (`red`, `white`, `threshold`) + curvature analysis | Colors + sensitivity (`threshold` = radius below which curbs appear); placement is automatic |
+| Rumble strips + center dashes | Engine-painted along the whole lap | None (fixed palette/placement) |
+| Start/finish: checker line, grid boxes, gantry with animated red→green light cycle | Derived from `s = 0` on the fitted curve | None |
+| Pit lane + garages + striped roofs + crew figures | Fixed arc offset from the start line; `scenery.garages` count (default 8, clamped 2–12); paint `theme.pit`; pit boxes follow garage slots (one per joined car) | Garage count + apron color; layout/crew are engine-fixed |
+| Grandstands with colored seats | `scenery.stands[]` (`atS`, `arcM?`, `side?`); omitted ⇒ auto: main straight + sharpest apex + mid-lap | Placement per stand; seat palette is engine-fixed |
+| Apex tire walls | `scenery.tireWalls[]` (`atS`, `count?`); omitted ⇒ auto at curvature peaks | Placement per wall |
+| Red/white outer barriers | `theme.barriers: true` ring outside the road, skipping curve insides | On/off only |
+| DRS boards | `scenery.drs[]` (`atS`, `side?`); omitted ⇒ auto at fixed lap fractions | Placement per board |
+| Floodlight towers | `scenery.floodlights[]` (`x`, `z`); omitted ⇒ island corners | Placement per tower |
+| Water lagoons inset into the island top | `water[]` discs + `theme.water` hex | Position/size/color |
+| Seeded scatter (palms/pines/…) | `scatter` block; kept clear of road, water, `scenery.scatterExclusions[]` | Type/count/seed/exclusions |
+
+Candidate optional fields (future contract versions — **not** implemented;
+do not rely on them): per-map crew-shirt / stand-seat palettes, barrier
+density, gantry light-cycle timing, curb threshold per sector.
 
 ## Workflow for a new map
 

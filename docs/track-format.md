@@ -56,8 +56,9 @@ DRS boards at fixed fractions, floodlights at island corners).
 | `floodlights[]` | `{ x, z }` | floodlight tower at world coords |
 | `scatterExclusions[]` | `[x, z, r]` | circles the prop scatter must avoid (pit complex, stands, …); the legacy `scatter.exclusions` field is honored too |
 
-Notes for schema work (reconcile with the MCPG-63 track contract when it
-lands):
+Schema notes (reconciled with the MCPG-63 track contract — `scenery` is a
+known, validated top-level field; the canonical authoring reference is
+`tracks/README.md`):
 
 - the client tolerates unknown fields anywhere in the def and unknown
   `scenery` versions (defaults win);

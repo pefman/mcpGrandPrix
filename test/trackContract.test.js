@@ -228,6 +228,61 @@ describe('track contract v1 (MCPG-63)', () => {
     expect(rMany.warnings.join(' ')).toMatch(/perf budget/);
   });
 
+  // --- scenery block (MCPG-64 art direction, folded into the contract) --------
+  it('accepts a fully-populated scenery block with no warnings', () => {
+    const def = validDef();
+    def.scenery = {
+      version: 1,
+      island: { marginM: 70 },
+      garages: 8,
+      stands: [{ atS: 40, arcM: 90, side: 1 }],
+      tireWalls: [{ atS: 210, count: 6 }],
+      drs: [{ atS: 120, side: -1 }],
+      floodlights: [{ x: 190, z: 150 }],
+      scatterExclusions: [[70, 120, 48]],
+    };
+    const r = validateTrackDef(def);
+    expect(r.ok).toBe(true);
+    expect(r.warnings).toEqual([]);
+    expect(sanitizeTrackDef(def).scenery).toEqual(def.scenery);
+  });
+
+  it('tolerates scenery oddities with warnings — one bad stand must not kill the map', () => {
+    const def = validDef();
+    def.scenery = {
+      version: 0,
+      island: { marginM: -5 },
+      garages: 'lots',
+      hoverPads: [],
+      stands: [{ atS: 40 }, { arcM: 30 }, 'oops'],
+      drs: [{ atS: 120, side: 2 }],
+      floodlights: [{ x: 190 }],
+      scatterExclusions: [[70, 120]],
+    };
+    const r = validateTrackDef(def);
+    expect(r.ok).toBe(true); // decorative layer: warn-and-skip, never fatal
+    const w = r.warnings.join(' ');
+    expect(w).toMatch(/scenery\.version/);
+    expect(w).toMatch(/scenery\.island\.marginM/);
+    expect(w).toMatch(/scenery\.garages/);
+    expect(w).toMatch(/scenery\.hoverPads/);
+    expect(w).toMatch(/stands\[0\]\.arcM|stands\[1\]\.atS/); // missing required field
+    expect(w).toMatch(/stands\[1\]/); // non-object entry skipped
+    expect(w).toMatch(/drs\[0\]\.side/);
+    expect(w).toMatch(/floodlights\[0\]/);
+    expect(w).toMatch(/scatterExclusions\[0\]/);
+    // sanitized def keeps the block; the engine's resolver skips bad entries
+    expect(sanitizeTrackDef(def).scenery).toEqual(def.scenery);
+  });
+
+  it('treats a malformed scenery container as ignorable, like scatter', () => {
+    const def = validDef();
+    def.scenery = 42;
+    const r = validateTrackDef(def);
+    expect(r.ok).toBe(true);
+    expect(r.warnings.join(' ')).toMatch(/scenery.*ignored/);
+  });
+
   // --- client enforcement point -----------------------------------------------
   it('client loader falls back to the legacy ring on a contract violation', async () => {
     const { LEGACY_DEF, loadTrackDef } = await import('../client/js/tracks.js');

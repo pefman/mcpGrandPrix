@@ -70,7 +70,7 @@ function isHex(s) {
 /** Top-level keys of the v1 schema; anything else warns-and-skips. */
 const KNOWN_TOP_LEVEL_KEYS = new Set([
   'version', 'id', 'name', 'lengthM', 'sectorLengthM', 'roadWidthM',
-  'waypoints', 'water', 'theme', 'props', 'scatter', 'features',
+  'waypoints', 'water', 'theme', 'props', 'scatter', 'scenery', 'features',
 ]);
 
 /**
@@ -150,6 +150,7 @@ export function validateTrackDef(def) {
   validateTheme(def, v);
   validateProps(def, v);
   validateScatter(def.scatter, v.warn);
+  validateScenery(def.scenery, v.warn);
   validateFeatures(def.features, v.warn);
 
   return { ok: errors.length === 0, errors, warnings };
@@ -380,6 +381,94 @@ function validateScatter(scatter, warn) {
   }
 }
 
+/**
+ * Scenery block (voxel dressing, MCPG-64): purely decorative, so every
+ * oddity warns-and-skips — the engine renders a safe baseline without it,
+ * and one malformed stand must not kill the map. Known list entries are
+ * validated individually (a bad entry is skipped, siblings still render).
+ */
+function validateScenery(scenery, warn) {
+  if (scenery === undefined || scenery === null) return;
+  if (!isPlainObject(scenery)) {
+    warn(`scenery: expected an object or null, got ${JSON.stringify(scenery)} — ignored`);
+    return;
+  }
+  const KNOWN_SCENERY_KEYS = new Set([
+    'version', 'island', 'garages', 'stands', 'tireWalls', 'drs',
+    'floodlights', 'scatterExclusions',
+  ]);
+  for (const key of Object.keys(scenery)) {
+    if (!KNOWN_SCENERY_KEYS.has(key)) warn(`scenery.${key}: unknown key ignored (forward compat)`);
+  }
+  if (scenery.version !== undefined && (!Number.isInteger(scenery.version) || scenery.version < 1)) {
+    warn('scenery.version: expected an integer >= 1');
+  }
+  if (scenery.island !== undefined) {
+    if (!isPlainObject(scenery.island)) warn('scenery.island: expected an object — ignored');
+    else if (scenery.island.marginM !== undefined && (!isNum(scenery.island.marginM) || scenery.island.marginM <= 0)) {
+      warn('scenery.island.marginM: expected a positive number');
+    }
+  }
+  if (scenery.garages !== undefined && (!Number.isInteger(scenery.garages) || scenery.garages < 0)) {
+    warn('scenery.garages: expected a non-negative integer (engine clamps to its own 2..12 range)');
+  }
+
+  /** Every entry must be an object carrying the required numeric fields. */
+  const checkList = (listName, required, optionalInts = [], optionalSides = false) => {
+    const list = scenery[listName];
+    if (list === undefined || list === null) return;
+    if (!Array.isArray(list)) {
+      warn(`scenery.${listName}: expected an array of objects — ignored`);
+      return;
+    }
+    list.forEach((e, i) => {
+      if (!isPlainObject(e)) {
+        warn(`scenery.${listName}[${i}]: expected an object — skipped`);
+        return;
+      }
+      for (const k of Object.keys(e)) {
+        if (!required.includes(k) && !optionalInts.includes(k) && !(optionalSides && k === 'side')) {
+          warn(`scenery.${listName}[${i}].${k}: unknown key ignored (forward compat)`);
+        }
+      }
+      for (const k of required) {
+        if (!isNum(e[k])) warn(`scenery.${listName}[${i}].${k}: expected a finite number — entry skipped`);
+      }
+      for (const k of optionalInts) {
+        if (e[k] !== undefined && (!Number.isInteger(e[k]) || e[k] < 1)) {
+          warn(`scenery.${listName}[${i}].${k}: expected a positive integer`);
+        }
+      }
+      if (optionalSides && e.side !== undefined && e.side !== -1 && e.side !== 1) {
+        warn(`scenery.${listName}[${i}].side: expected -1 or 1`);
+      }
+    });
+  };
+  checkList('stands', ['atS'], ['arcM'], true);
+  checkList('tireWalls', ['atS'], ['count']);
+  checkList('drs', ['atS'], [], true);
+
+  const fl = scenery.floodlights;
+  if (fl !== undefined && fl !== null) {
+    if (!Array.isArray(fl)) warn('scenery.floodlights: expected an array of {x, z} — ignored');
+    else fl.forEach((f, i) => {
+      if (!isPlainObject(f) || !isNum(f.x) || !isNum(f.z)) {
+        warn(`scenery.floodlights[${i}]: expected {x, z} numbers — skipped`);
+      }
+    });
+  }
+
+  const ex = scenery.scatterExclusions;
+  if (ex !== undefined && ex !== null) {
+    if (!Array.isArray(ex)) warn('scenery.scatterExclusions: expected [x, z, r] triples — ignored');
+    else ex.forEach((e, i) => {
+      if (!Array.isArray(e) || e.length !== 3 || !e.every(isNum) || e[2] <= 0) {
+        warn(`scenery.scatterExclusions[${i}]: expected [x, z, r] numbers with r > 0 — skipped`);
+      }
+    });
+  }
+}
+
 /** Capability flags gate optional engine features; unknown ones warn-skip. */
 function validateFeatures(features, warn) {
   if (features === undefined || features === null) return;
@@ -402,7 +491,7 @@ function validateFeatures(features, warn) {
 export function sanitizeTrackDef(def) {
   const KEPT_KEYS = [
     'version', 'id', 'name', 'lengthM', 'sectorLengthM', 'roadWidthM',
-    'waypoints', 'water', 'theme', 'props', 'scatter', 'features',
+    'waypoints', 'water', 'theme', 'props', 'scatter', 'scenery', 'features',
   ];
   const clean = {};
   for (const key of KEPT_KEYS) {
