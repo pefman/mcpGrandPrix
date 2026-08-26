@@ -151,7 +151,7 @@ describe('buildScenery', () => {
     expect(scn.island.rx).toBeGreaterThan(160);
     expect(scn.island.rz).toBeGreaterThan(160);
     expect(scn.island.bottomY).toBeLessThan(-18);
-    expect(scn.island.topY).toBe(-0.5);
+    expect(scn.island.topY).toBe(-0.8); // grass top: 0.8 m below the road (MCPG-66)
     scn.dispose();
   });
 });

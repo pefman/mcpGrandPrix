@@ -51,6 +51,7 @@ const C = {
   standSeat: [0xe84a3f, 0x3f7fe8, 0xf2c53f, 0x49c15b, 0xf2f2f2],
   standStepA: 0xd8d8dc,
   standStepB: 0xbfc3c9,
+  standRoof: 0x2b2e33,
   standFascia: 0x3a3e44,
   standPost: 0x55585e,
   drsPole: 0x9aa0a8,
@@ -63,9 +64,10 @@ const C = {
   gantryBand: 0xe8412f,
 };
 
-const GRASS_TOP_Y = -0.5; // island surface, below the road ribbon (y = 0)
-const ISLAND_CELL = 12;   // grass/dirt grid step (m)
-const ROCK_CELL = 18;     // deep rock keel step (m)
+const GRASS_TOP_Y = -0.8; // island surface: 0.8 m below the road top (y = 0),
+// the reference's raised-slab road (grass top 0.0, road top 0.8 — MCPG-66)
+const ISLAND_CELL = 10;   // grass/dirt grid step (m) — reference: 10 m
+const ROCK_CELL = 12;     // deep rock keel step (m) — reference: 12 m
 const GANTRY_CYCLE_MS = 6000;
 
 /** theme hex string -> int (tolerates numbers, falls back safely). */
@@ -224,20 +226,21 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
       const x = gx + ISLAND_CELL / 2;
       const z = gz + ISLAND_CELL / 2;
       if (!inIsland(x, z)) continue;
-      // cells overlap by a hair: flush-but-gapped columns alias to black
-      // vertical seams at the 1/4-res pixelated buffer (MCPG-64 finding)
-      const cell = ISLAND_CELL + 0.05;
+      // cells overlap by a hair: flush cells would leave hairline gaps
+      const cell = ISLAND_CELL - 0.2;
       voxels.add(x, GRASS_TOP_Y - 0.4, z, cell, 0.8, cell, rng.next() < 0.5 ? toneA : toneB);
       // dirt skirt: only the outer ring is visible (interior cells are
       // covered by grass above and neighbors beside) — perf: ~40% fewer
-      // voxels for a zero-visual-change cut
+      // voxels for a zero-visual-change cut. Reference geometry: -8.6..-0.8
       if (!inIsland(x, z, 0.90)) {
-        voxels.add(x, -5.2, z, cell, 7.8, cell, dirtC);
+        voxels.add(x, -5.5, z, cell, 7.8, cell, dirtC);
       }
+      // ragged grass edge (reference): slightly inset cells that jut past
+      // the rim with seeded jitter
       if (!inIsland(x, z, 0.94)) {
         const j = rng.next();
         voxels.add(
-          x + (rng.next() - 0.5) * 3, GRASS_TOP_Y - 1.3 - j * 1.5, z + (rng.next() - 0.5) * 3,
+          x + (rng.next() - 0.5) * 3, GRASS_TOP_Y - 1.8 - j * 1.5, z + (rng.next() - 0.5) * 3,
           ISLAND_CELL - 0.4, 2.2 + j * 2, ISLAND_CELL - 0.4,
           rng.next() < 0.5 ? toneA : toneB,
         );
@@ -251,71 +254,83 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
       const z = gz + ROCK_CELL / 2;
       const r = ((x - cx) / rx) ** 2 + ((z - cz) / rz) ** 2;
       if (r >= 0.92) continue;
-      const depth = (1 - Math.sqrt(Math.max(0, r))) * 38 * (0.75 + rng.next() * 0.5);
+      // reference keel: deep tapering rock cone (the tips stay buried below
+      // the ground plane / behind the rim — the silhouette is what reads)
+      const depth = (1 - Math.sqrt(Math.max(0, r))) * 95 * (0.75 + rng.next() * 0.5);
       const h = depth + 10;
       const v = rng.next();
       const c = v < 0.12 ? 0x9aa0a8 : v < 0.3 ? 0x6e4423 : rockC;
-      voxels.add(x, -9.1 - h / 2, z, ROCK_CELL + 4, h, ROCK_CELL + 4, c);
-      islandBottomY = Math.min(islandBottomY, -9.1 - h);
+      voxels.add(x, -9.4 - h / 2, z, ROCK_CELL - 0.4, h, ROCK_CELL - 0.4, c);
+      islandBottomY = Math.min(islandBottomY, -9.4 - h);
       if (rng.next() < 0.09) {
         const bx = x + (rng.next() - 0.5) * 10;
         const bz = z + (rng.next() - 0.5) * 10;
-        voxels.add(bx, -15.5 - h, bz, 5, 9, 5, 0x7a4f28);
-        islandBottomY = Math.min(islandBottomY, -20 - h);
+        voxels.add(bx, -10.8 - h, bz, 5, 9, 5, 0x7a4f28);
+        islandBottomY = Math.min(islandBottomY, -15.3 - h);
       }
     }
   }
 
   // ---- road dressing: outer rumble pads + center dash markings ----
+  // Rumble pads sit ON the grass (below the road top, like the reference);
+  // dashes sit just above the road top.
   for (let i = 0; i < N; i += 6) {
     const off = roadWidthM / 2 + 2.4;
     for (const side of [-1, 1]) {
       voxels.add(
-        pts[i].x + normals[i].x * side * off, -0.25, pts[i].z + normals[i].z * side * off,
-        segLen * 6, 0.5, 1, C.rumble, rys[i],
+        pts[i].x + normals[i].x * side * off, -0.65, pts[i].z + normals[i].z * side * off,
+        segLen * 6, 0.3, 1, C.rumble, rys[i],
       );
     }
   }
   for (let i = 0; i < N; i += 4) {
-    voxels.add(pts[i].x, 0.65, pts[i].z, segLen * 1.6, 0.06, 0.35, C.dash, rys[i]);
+    voxels.add(pts[i].x, 0.07, pts[i].z, segLen * 1.6, 0.03, 0.3, C.dash, rys[i]);
   }
 
   // ---- red/white barriers (skip curve insides + tight passes) ----
+  // Reference rule: on sharp corners the barrier is kept on the INSIDE of
+  // the turn (run-off side is clear). 0.11 rad over the ±2 sample window,
+  // converted to per-meter units for this curve.
+  const barrierThresh = 0.11 / ((4 / N) * arclen);
   if (theme.barriers) {
     for (let i = 0; i < N; i += 2) {
       for (const side of [-1, 1]) {
-        // run-off area: no barrier on the INSIDE of sharp corners (reference rule)
-        if (curv[i] > 0.027 && side === insideSide(i)) continue;
+        // run-off area: no barrier on the OUTSIDE of sharp corners (reference rule)
+        if (curv[i] > barrierThresh && side === -insideSide(i)) continue;
         const bx = pts[i].x + normals[i].x * side * (roadWidthM / 2 + 9);
         const bz = pts[i].z + normals[i].z * side * (roadWidthM / 2 + 9);
         if (distToTrack(bx, bz) < 8) continue;
         voxels.add(
-          bx, 1.1, bz, segLen * 4.6, 2.2, 0.7,
+          bx, GRASS_TOP_Y + 0.5, bz, segLen * 4.6, 2.2, 0.7,
           i % 36 < 18 ? C.barrierWhite : C.barrierRed, rys[i],
         );
       }
     }
   }
 
-  // ---- grid boxes behind the start line ----
+  // ---- grid boxes behind the start line (reference: 30 m back, 8 m apart) ----
   {
     const st = curve.getTangentAt(0);
     const sn = new THREE.Vector3(-st.z, 0, st.x);
     const sry = rys[0];
     for (let k = 0; k < 8; k++) {
-      const gp = curve.getPointAt(at(lengthM - 28 - k * 8));
+      const gp = curve.getPointAt(at(lengthM - 30 - k * 8));
       for (const off of [-3.25, 3.25]) {
-        voxels.add(gp.x + sn.x * off, 0.62, gp.z + sn.z * off, 4.5, 0.1, 2.4, C.gridSlot, sry);
+        voxels.add(gp.x + sn.x * off, 0.16, gp.z + sn.z * off, 4.5, 0.1, 2.4, C.gridSlot, sry);
       }
     }
   }
 
   // ---- pit garages, slot markings, crew ----
+  // Garage shells size to their slot pitch so tight lanes (short start
+  // straights) never get overlapping roofs (MCPG-66 parity check).
   const pitSlots = [];
   {
     const G = Math.max(2, Math.min(12, scenery.garages));
+    const pitch = 80 / G; // lane span hardcoded in track.js ([15, 95])
+    const gw = Math.min(15, pitch * 0.92);
     for (let gi = 0; gi < G; gi++) {
-      const s = 15 + ((gi + 0.5) * 80) / G; // lane span hardcoded in track.js ([15, 95])
+      const s = 15 + ((gi + 0.5) * 80) / G;
       const u = at(s);
       const p = curve.getPointAt(u);
       const t = curve.getTangentAt(u);
@@ -324,19 +339,19 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
       const lane = p.clone().addScaledVector(n, -20);
       pitSlots.push({ s, pos: lane.clone(), tangent: t.clone() });
       // white slot stripe on the lane
-      voxels.add(lane.x, 0.62, lane.z, 13, 0.06, 2.2, C.gridSlot, ry);
+      voxels.add(lane.x, -0.06, lane.z, Math.min(13, gw), 0.06, 2.2, C.gridSlot, ry);
       // garage shell behind the lane (further inside the circuit)
       const g = p.clone().addScaledVector(n, -32);
-      voxels.add(g.x, GRASS_TOP_Y + 0.25, g.z, 15, 0.5, 12, C.garageApron, ry);
-      voxels.add(g.x, 2.05, g.z, 15, 4.4, 0.9, gi % 2 ? C.garageWallA : C.garageWallB, ry);
-      for (const px of [-6.5, 6.5]) {
+      voxels.add(g.x, GRASS_TOP_Y + 0.25, g.z, gw + 0.5, 0.5, 12, C.garageApron, ry);
+      voxels.add(g.x, 2.05, g.z, gw, 4.4, 0.9, gi % 2 ? C.garageWallA : C.garageWallB, ry);
+      for (const px of [-(gw / 2 - 0.5), gw / 2 - 0.5]) {
         for (const pz of [-5.2, 5.2]) {
           voxels.add(g.x + t.x * px + n.x * pz, 3.2, g.z + t.z * px + n.z * pz, 1, 6.4, 1, C.garagePillar, ry);
         }
       }
       const roof = p.clone().addScaledVector(n, -30);
-      voxels.add(roof.x, 6.7, roof.z, 16.4, 0.8, 13, C.garageRoof, ry);
-      voxels.add(roof.x, 7.4, roof.z, 16.4, 0.6, 1.2, gi % 2 ? C.roofStripeRed : C.roofStripeWhite, ry);
+      voxels.add(roof.x, 6.7, roof.z, gw + 1.4, 0.8, 13, C.garageRoof, ry);
+      voxels.add(roof.x, 7.4, roof.z, gw + 1.4, 0.6, 1.2, gi % 2 ? C.roofStripeRed : C.roofStripeWhite, ry);
       // pit crew trio between the lane and the garages
       for (let m = 0; m < 3; m++) {
         const mp = p.clone().addScaledVector(n, -24.5).addScaledVector(t, -4 + m * 4);
@@ -362,9 +377,9 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
         const x = p.x + n.x * side * d;
         const z = p.z + n.z * side * d;
         const h = 1.4 + r * 1.2;
-        voxels.add(x, h / 2, z, step * 0.95, h, 1.9, r % 2 ? C.standStepA : C.standStepB, ry);
+        voxels.add(x, GRASS_TOP_Y + h / 2, z, step * 0.95, h, 1.9, r % 2 ? C.standStepA : C.standStepB, ry);
         if (rng.next() < 0.7) {
-          voxels.add(x, h + 0.5, z, 1.1, 1.1, 1.1, C.standSeat[Math.floor(rng.next() * C.standSeat.length)], ry);
+          voxels.add(x, GRASS_TOP_Y + h + 0.5, z, 1.1, 1.1, 1.1, C.standSeat[Math.floor(rng.next() * C.standSeat.length)], ry);
         }
       }
     }
@@ -375,14 +390,15 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
       const t = curve.getTangentAt(u);
       const n = new THREE.Vector3(-t.z, 0, t.x);
       const ry = Math.atan2(t.x, t.z) + Math.PI / 2;
-      // open-air terraces: from the spectator's high angle a roof slab would
-      // hide the seats (the reference's orbit camera looks under it, ours
-      // looks down on it) — a light back rail + posts keep the silhouette
+      // canopy roof + fascia behind the top row (reference silhouette):
+      // from the default high angle the seats show through the front;
+      // low angles see the dark roof line
       const x = p.x + n.x * side * cd;
       const z = p.z + n.z * side * cd;
-      voxels.add(x, 8.2, z, step * 1.7, 0.5, 1.2, C.standFascia, ry);
+      voxels.add(x, 11.8, z, step * 1.7, 0.7, 16.4, C.standRoof, ry);
+      voxels.add(x, 11.3, z, step * 1.4, 0.4, 16.4, C.standFascia, ry);
       if (si % 6 === 0) {
-        voxels.add(p.x + n.x * side * (roadWidthM / 2 + 10), 4, p.z + n.z * side * (roadWidthM / 2 + 10), 1, 8, 1, C.standPost, ry);
+        voxels.add(p.x + n.x * side * (roadWidthM / 2 + 10), 5.2, p.z + n.z * side * (roadWidthM / 2 + 10), 1, 12, 1, C.standPost, ry);
       }
     }
   };
@@ -401,20 +417,20 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
     buildStand(lengthM * 0.62, 60, outsideSide(Math.round(at(lengthM * 0.62) * N)));
   }
 
-  // ---- apex tire walls (outside of corners) ----
+  // ---- apex tire walls (INSIDE of corners, reference rule) ----
   const tireWallAt = (s, count) => {
     const u = at(s);
     const p = curve.getPointAt(u);
+    const i = Math.min(N - 1, Math.round(u * N));
     const t = curve.getTangentAt(u);
-    const t2 = curve.getTangentAt((u + 0.02) % 1);
-    const side = Math.sign(t.z * t2.x - t.x * t2.z) < 0 ? -1 : 1;
+    const side = insideSide(i);
     const n = new THREE.Vector3(-t.z, 0, t.x);
     const ry = Math.atan2(t.x, t.z) + Math.PI / 2;
     for (let k = 0; k < count; k++) {
       const x = p.x + n.x * side * (roadWidthM / 2 + 11 + k * 2.2);
       const z = p.z + n.z * side * (roadWidthM / 2 + 11 + k * 2.2);
       for (let hgt = 0; hgt < 2 + (k % 2); hgt++) {
-        voxels.add(x, 0.55 + hgt * 1.4, z, 2, 1.3, 3.4, k % 2 ? C.tireDark : C.tireWhite, ry);
+        voxels.add(x, GRASS_TOP_Y + 0.8 + hgt * 1.4, z, 2, 1.3, 3.4, k % 2 ? C.tireDark : C.tireWhite, ry);
       }
     }
   };
@@ -440,7 +456,7 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
     for (const i of peaks.slice(0, 5)) tireWallAt((i / N) * arclen, 5 + (i % 2));
   }
 
-  // ---- DRS boards ----
+  // ---- DRS boards (tall pole + 10x3 blue panel + white stripe) ----
   const drsBoard = (s, side) => {
     const u = at(s);
     const p = curve.getPointAt(u);
@@ -448,10 +464,12 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
     const n = new THREE.Vector3(-t.z, 0, t.x);
     const ry = Math.atan2(t.x, t.z) + Math.PI / 2;
     const base = p.clone().addScaledVector(n, side * (roadWidthM / 2 + 9));
-    voxels.add(base.x, 4, base.z, 1.0, 8, 1.0, C.drsPole, ry);
-    voxels.add(base.x, 9, base.z, 1.0, 3, 10, C.drsPanel, ry);
+    voxels.add(base.x, 3.2, base.z, 0.8, 8, 0.8, C.drsPole, ry);
+    // 10 m wide face along the track (ry aligns local x with the tangent),
+    // 0.6 m thick across it — the driver reads the board face-on
+    voxels.add(base.x, 8.2, base.z, 10, 3, 0.6, C.drsPanel, ry);
     const stripe = base.clone().addScaledVector(n, -side * 0.6);
-    voxels.add(stripe.x, 9, stripe.z, 0.7, 1, 6, C.drsStripe, ry);
+    voxels.add(stripe.x, 8.2, stripe.z, 6, 1, 0.5, C.drsStripe, ry);
   };
   if (scenery.drs) {
     for (const d of scenery.drs) {
@@ -465,12 +483,11 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
     }
   }
 
-  // ---- floodlights ----
+  // ---- floodlights (pole + 2x4 lamp grid, reference proportions) ----
   const floodlight = (x, z) => {
-    voxels.add(x, 14, z, 2.2, 28, 2.2, C.floodPole);
-    voxels.add(x, 27.4, z, 7, 1.6, 1.6, C.floodPole);
+    voxels.add(x, 13.2, z, 1.4, 28, 1.4, C.floodPole);
     for (let r = 0; r < 2; r++) {
-      for (let c = 0; c < 4; c++) voxels.add(x - 3 + c * 2, 29.4 + r * 2.2, z, 1.9, 1.9, 1.6, C.floodLamp);
+      for (let c = 0; c < 4; c++) voxels.add(x - 3 + c * 2, 28.2 + r * 2, z, 1.6, 1.6, 1.2, C.floodLamp);
     }
   };
   if (scenery.floodlights) {
@@ -497,7 +514,7 @@ export function buildScenery({ curve, arclen, lengthM, roadWidthM, theme, scener
     const sn = new THREE.Vector3(-st.z, 0, st.x);
     const sry = rys[0];
     for (const side of [-1, 1]) {
-      voxels.add(sp.x + sn.x * side * (roadWidthM / 2 + 1.5), 5, sp.z + sn.z * side * (roadWidthM / 2 + 1.5), 1.6, 11, 1.6, C.gantryPillar, sry);
+      voxels.add(sp.x + sn.x * side * (roadWidthM / 2 + 1.5), 4.2, sp.z + sn.z * side * (roadWidthM / 2 + 1.5), 1.6, 11, 1.6, C.gantryPillar, sry);
     }
     voxels.add(sp.x, 10.5, sp.z, roadWidthM + 6, 1.6, 2.2, C.gantryBeam, sry);
     voxels.add(sp.x, 9.2, sp.z, roadWidthM + 2, 1.4, 2.6, C.gantryBand, sry);

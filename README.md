@@ -50,8 +50,12 @@ Night city: dark asphalt under blue moonlight, orange FX accents.
 
 ## What you'll see
 
-The spectator view is a fixed top-down 3/4 pixel-art diorama of the whole
-island, live-updated:
+The spectator view is a crisp voxel-art diorama of the whole island, live-
+updated — rendered at full resolution with antialiasing (the renderer
+matches the canonical reference `client/design/reference/f1-track.html`):
+
+- **Orbit view** — drag to orbit, scroll to zoom, right-drag to pan; the
+  camera starts at the reference's 3/4 angle fitted to the island.
 
 - **Voxel cars with per-agent liveries** — colors assigned by join order,
   plus name plates that avoid overlap.

@@ -1,7 +1,14 @@
 /**
- * Box-built props (MCPG-27): palms, pines, city blocks, grandstand, rocks,
- * boats, street lamps, sponsor signs (MCPG-45) — plus seeded scatter
- * placement so each track's scenery is identical on every load.
+ * Box-built props (MCPG-27): palms, pines, city blocks, grandstands, rocks,
+ * boats, street lamps, sponsor signs — plus seeded scatter placement so each
+ * track's scenery is identical on every load.
+ *
+ * MCPG-66: the palm matches the f1-track.html reference (2.2 m trunk,
+ * 3x3x2 leaf-cube cluster with seeded dropout, per-tree leaf tone). To keep
+ * the full-resolution renderer at the reference's 60 fps class, every prop's
+ * plain boxes are baked into ONE merged geometry (vertex colors) — one draw
+ * call per prop; only textured facades and unlit glow parts stay separate
+ * meshes.
  */
 import * as THREE from 'three';
 import { createRng } from './rng.js';
@@ -20,19 +27,64 @@ function windowsTextureFor(wallHex) {
   return tex;
 }
 
-function box(w, h, d, color, y = 0, { basic = false } = {}) {
-  const mat = basic
-    ? new THREE.MeshBasicMaterial({ color })
-    : new THREE.MeshLambertMaterial({ color });
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  m.position.y = y;
-  return m;
+// unit box source data (BoxGeometry: 24 vertices, 36 indices) — reused to
+// bake every prop's boxes into a single indexed geometry
+const UNIT = new THREE.BoxGeometry(1, 1, 1);
+const unitPos = UNIT.attributes.position.array;
+const unitNor = UNIT.attributes.normal.array;
+const unitIdx = UNIT.index.array;
+
+/** Bake a list of axis-aligned (Y-rotated) boxes into one geometry. */
+function mergeBoxes(parts) {
+  if (!parts.length) return null;
+  const pos = [];
+  const nor = [];
+  const col = [];
+  const idx = [];
+  const c = new THREE.Color();
+  for (const p of parts) {
+    const base = pos.length / 3;
+    c.set(p.color);
+    const cs = Math.cos(p.ry || 0);
+    const sn = Math.sin(p.ry || 0);
+    for (let i = 0; i < 24; i++) {
+      const x = unitPos[i * 3] * p.w;
+      const y = unitPos[i * 3 + 1] * p.h;
+      const z = unitPos[i * 3 + 2] * p.d;
+      pos.push(p.x + x * cs - z * sn, p.y + y, p.z + x * sn + z * cs);
+      const nx = unitNor[i * 3];
+      const nz = unitNor[i * 3 + 2];
+      nor.push(nx * cs - nz * sn, unitNor[i * 3 + 1], nx * sn + nz * cs);
+      col.push(c.r, c.g, c.b);
+    }
+    for (let i = 0; i < 36; i++) idx.push(base + unitIdx[i]);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  return geo;
 }
 
-function place(m, x = 0, z = 0) {
-  m.position.x = x;
-  m.position.z = z;
-  return m;
+/**
+ * Builder context: `add` collects plain colored boxes (baked into the
+ * prop's single merged geometry); `addMesh` keeps a special mesh separate
+ * (textured facades, unlit glow parts).
+ */
+function makeCtx() {
+  const parts = [];
+  const extras = [];
+  return {
+    parts,
+    extras,
+    add(w, h, d, color, x = 0, y = 0, z = 0, ry = 0) {
+      parts.push({ w, h, d, color, x, y, z, ry });
+    },
+    addMesh(m) {
+      extras.push(m);
+    },
+  };
 }
 
 // Step 5 (MCPG-47): night-readable slate tones. The city towers are lit by
@@ -41,20 +93,32 @@ function place(m, x = 0, z = 0) {
 const BUILDING_COLORS = [0x8a90a8, 0x7d8399, 0x979db4, 0x737990, 0x848aa2];
 
 const BUILDERS = {
-  palm(p, g, rng) {
-    const h = p.h ?? rng.int(6, 9);
-    g.add(box(1.2, h, 1.2, 0x9a6f42, h / 2));
-    g.add(box(7, 1.2, 2.6, 0x1e9e56, h + 0.2));
-    g.add(box(2.6, 1.2, 7, 0x27ac62, h + 0.2));
-    g.add(box(4.4, 1, 4.4, 0x34c474, h + 1.2));
+  /**
+   * Palm — the reference's voxel cluster: slim trunk, then a 3x3x2 grid of
+   * 3.6 m leaf cubes (20% seeded dropout), one leaf tone per tree.
+   */
+  palm(p, ctx, rng) {
+    const h = p.h ?? 2 + rng.next() * 3;
+    const trunkH = 4 + h;
+    ctx.add(2.2, trunkH, 2.2, 0x7a4a22, 0, trunkH / 2, 0);
+    const leaf = [0x35c04a, 0x3fd455, 0x2fb542][Math.floor(rng.next() * 3)];
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = 0; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 2 || rng.next() < 0.2) continue;
+          ctx.add(3.6, 3.6, 3.6, leaf, dx * 2.4, trunkH + 1.6 + dy * 2.4, dz * 2.4);
+        }
+      }
+    }
   },
 
-  pine(p, g, rng) {
-    // base at y=0 so the uniform scale keeps the trunk on the ground
-    g.add(place(box(1, 2.4, 1, 0x7a5636, 1.2)));
-    g.add(place(box(4.6, 3, 4.6, 0x2e7d4a, 4.1)));
-    g.add(place(box(3, 2.6, 3, 0x3d9758, 6.7)));
-    g.scale.setScalar(0.85 + rng.next() * 0.5);
+  pine(p, ctx, rng) {
+    // base at y=0 so the group scale keeps the trunk on the ground
+    ctx.add(1, 2.4, 1, 0x7a5636, 0, 1.2, 0);
+    ctx.add(4.6, 3, 4.6, 0x2e7d4a, 0, 4.1, 0);
+    ctx.add(3, 2.6, 3, 0x3d9758, 0, 6.7, 0);
+    // per-prop scale applied to the merged mesh below
+    ctx.scale = 0.85 + rng.next() * 0.5;
   },
 
   /**
@@ -68,13 +132,13 @@ const BUILDERS = {
     const d = p.d ?? 24;
     const h = p.h ?? 40;
     const color = p.color ?? BUILDING_COLORS[(Math.abs(Math.round(p.x)) * 31 + Math.abs(Math.round(p.z)) * 17) % BUILDING_COLORS.length];
+    g.add(w, h, d, color, 0, h / 2, 0);
     const base = windowsTextureFor(`#${new THREE.Color(color).getHexString()}`);
-    g.add(box(w, h, d, color, h / 2));
     const t = 0.3;
     const facade = (sx, sz, x, z) => {
       const tex = base.clone(); // per-facade repeat, shared 16x16 image
       tex.repeat.set(
-        Math.max(1, Math.round(Math.max(sx, sz) / 12)), // one tile ~ 12 m -> ~3 m windows
+        Math.max(1, Math.round(Math.max(sx, sz) / 12)), // one tile ~ 12 m -> ~ 3 m windows
         Math.max(1, Math.round((h * 0.6) / 12)),
       );
       const m = new THREE.Mesh(
@@ -82,13 +146,20 @@ const BUILDERS = {
         new THREE.MeshBasicMaterial({ map: tex }),
       );
       m.position.set(x, h * 0.55, z);
-      g.add(m);
+      g.addMesh(m);
     };
     facade(w * 0.72, t, 0, d / 2 + t / 2);
     facade(w * 0.72, t, 0, -d / 2 - t / 2);
     facade(t, d * 0.72, w / 2 + t / 2, 0);
     facade(t, d * 0.72, -w / 2 - t / 2, 0);
-    if (p.neon) g.add(box(w + 0.6, 0.8, d + 0.6, p.neon, h + 0.4, { basic: true }));
+    if (p.neon) {
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(w + 0.6, 0.8, d + 0.6),
+        new THREE.MeshBasicMaterial({ color: p.neon }),
+      );
+      m.position.y = h + 0.4;
+      g.addMesh(m);
+    }
   },
 
   /**
@@ -99,40 +170,44 @@ const BUILDERS = {
     const w = p.w ?? 30;
     const d = p.d ?? 12;
     const h = p.h ?? 8;
-    g.add(box(w, 1.2, d, 0x9aa1b2, 0.6));
+    g.add(w, 1.2, d, 0x9aa1b2, 0, 0.6, 0);
     for (let i = 0; i < 3; i++) {
-      g.add(place(box(w, 1.4, d * 0.28, 0x8088a0, 1.7 + i * 1.4), 0, -d * 0.24 - i * d * 0.28));
+      g.add(w, 1.4, d * 0.28, 0x8088a0, 0, 1.7 + i * 1.4, -d * 0.24 - i * d * 0.28);
     }
-    g.add(box(w, 0.7, d + 3, 0x2f3542, h));
-    g.add(place(box(0.8, h - 0.4, 0.8, 0x2f3542, (h - 0.4) / 2 + 0.4), -w / 2 + 2, d / 2 - 1));
-    g.add(place(box(0.8, h - 0.4, 0.8, 0x2f3542, (h - 0.4) / 2 + 0.4), w / 2 - 2, d / 2 - 1));
+    g.add(w, 0.7, d + 3, 0x2f3542, 0, h, 0);
+    g.add(0.8, h - 0.4, 0.8, 0x2f3542, -w / 2 + 2, (h - 0.4) / 2 + 0.4, d / 2 - 1);
+    g.add(0.8, h - 0.4, 0.8, 0x2f3542, w / 2 - 2, (h - 0.4) / 2 + 0.4, d / 2 - 1);
   },
 
   rock(p, g, rng) {
     const s = 0.8 + rng.next() * 0.6;
-    const rock = new THREE.Group();
-    rock.add(box(5, 3, 5, 0x83868e, 1.5));
-    rock.add(place(box(2.6, 1.8, 2.6, 0x91949c, 3.6), 0.8, 0.4));
-    rock.scale.setScalar(s);
-    g.add(rock);
+    g.add(5, 3, 5, 0x83868e, 0, 1.5, 0);
+    g.add(2.6, 1.8, 2.6, 0x91949c, 0.8, 3.6, 0.4);
+    g.scale = s;
   },
 
   boat(p, g) {
-    g.add(box(6, 1.1, 2.4, 0xf4f0e6, 0.9));
-    g.add(box(5.6, 0.3, 2, 0xe0453a, 1.6));
-    g.add(place(box(1.8, 1.1, 1.6, 0xffffff, 2.3), -1, 0));
-    g.add(place(box(0.3, 3, 0.3, 0x9a6f42, 3.2), 1.8, 0));
+    g.add(6, 1.1, 2.4, 0xf4f0e6, 0, 0.9, 0);
+    g.add(5.6, 0.3, 2, 0xe0453a, 0, 1.6, 0);
+    g.add(1.8, 1.1, 1.6, 0xffffff, -1, 2.3, 0);
+    g.add(0.3, 3, 0.3, 0x9a6f42, 1.8, 3.2, 0);
   },
 
   /**
    * Street lamp. The arm points local +x; scatter sets rot to face the
    * road. Step 5 (MCPG-47): pole/arm thickened ~3x so the lamps read at
-   * diorama distance instead of vanishing into the buildings.
+   * diorama distance instead of vanishing into the buildings. The warm
+   * lamp head stays an unlit (basic) mesh so it glows at night.
    */
   lamp(p, g) {
-    g.add(box(1.6, 6.5, 1.6, 0x3a4152, 3.25));
-    g.add(place(box(2.4, 0.6, 1.0, 0x3a4152, 6.2), 0.8, 0));
-    g.add(place(box(1.5, 0.7, 1.5, 0xffdf96, 5.9, { basic: true }), 1.7, 0));
+    g.add(1.6, 6.5, 1.6, 0x3a4152, 0, 3.25, 0);
+    g.add(2.4, 0.6, 1.0, 0x3a4152, 0.8, 6.2, 0);
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 0.7, 1.5),
+      new THREE.MeshBasicMaterial({ color: 0xffdf96 }),
+    );
+    m.position.set(1.7, 5.9, 0);
+    g.addMesh(m);
   },
 
   /**
@@ -144,20 +219,29 @@ const BUILDERS = {
     const w = p.w ?? 8;
     const h = p.h ?? 5;
     const ph = Math.min(2.2, h * 0.45); // panel height
-    g.add(box(0.8, h, 0.8, 0x3a4152, h / 2));
-    g.add(box(w, ph, 0.7, p.color ?? 0xffc53d, h - 0.3 - ph / 2));
+    g.add(0.8, h, 0.8, 0x3a4152, 0, h / 2, 0);
+    g.add(w, ph, 0.7, p.color ?? 0xffc53d, 0, h - 0.3 - ph / 2, 0);
   },
 };
 
 /**
- * Build one prop def ({type, x, z, rot?, ...}) into a Group at (x, 0, z).
+ * Build one prop def ({type, x, z, rot?, ...}) into a Group at (x, 0, z):
+ * one merged mesh for all colored boxes + special meshes (facades, glows).
  * Returns null for unknown types (def files are versioned, be forgiving).
  */
 export function buildProp(p, rng) {
   const build = BUILDERS[p.type];
   if (!build) return null;
+  const ctx = makeCtx();
+  build(p, ctx, rng);
   const g = new THREE.Group();
-  build(p, g, rng);
+  const geo = mergeBoxes(ctx.parts);
+  if (geo) {
+    const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    if (ctx.scale) m.scale.setScalar(ctx.scale);
+    g.add(m);
+  }
+  for (const m of ctx.extras) g.add(m);
   g.position.set(p.x, p.y ?? 0, p.z);
   if (p.rot != null) g.rotation.y = p.rot;
   return g;

@@ -1,15 +1,16 @@
 /**
- * Scenery art-direction shots (MCPG-64): the four sign-off screenshots for
- * the voxel circuit look — island wide, pit lane close-up, start gantry
- * mid-light-sequence, grandstand close-up — plus per-map wides.
+ * Scenery art-direction shots (MCPG-64, re-aimed for the crisp perspective
+ * camera in MCPG-66): the four sign-off screenshots for the voxel circuit
+ * look — island wide, pit lane close-up, start gantry mid-light-sequence,
+ * grandstand close-up — plus per-map wides.
  *
  *   node scripts/sceneryShots.mjs            # -> .visual/shot-*.png
  *
  * Starts the real server with 4 scripted MCP agents, loads the spectator
  * page in headless Chromium and drives the documented
- * window.__mcpGpScene handle: the fixed camera is re-aimed at a world
- * point with a tighter ortho frustum for the close-ups (same projection
- * type, same elevation — just zoomed).
+ * window.__mcpGpScene handle: the perspective camera is re-aimed at a
+ * world point with a tighter framing (same fov, same reference azimuth —
+ * just a shorter distance) for the close-ups.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -22,7 +23,6 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, '.visual');
 const port = Number(process.env.VISUAL_PORT ?? 3933);
-const ELEV = (35 * Math.PI) / 180; // scene.js camera elevation
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,24 +49,27 @@ async function joinAgents(port, names) {
   return clients;
 }
 
-/** Re-aim the fixed ortho camera at a world point with a half-height frustum. */
-async function aimAt(page, target, halfH, fromSouth = true) {
-  await page.evaluate(([t, hh, south]) => {
+/**
+ * Re-aim the perspective camera at a world point. `extent` is the visible
+ * vertical span (meters) at the target: distance = extent / (2·tan 22.5°).
+ * Same reference azimuth as the default framing (scene.js CAM_DIR).
+ */
+async function aimAt(page, target, extent, fromSouth = true) {
+  const dist = extent / (2 * Math.tan((45 / 2) * Math.PI / 180));
+  await page.evaluate(([t, d, south]) => {
     const s = window.__mcpGpScene;
+    const dir = south ? [0.497, 0.392, 0.774] : [-0.497, 0.392, -0.774];
+    const len = Math.hypot(dir[0], dir[1], dir[2]);
     const cam = s.camera;
-    const el = 0.6109; // 35° elevation (scene.js convention)
-    const dy = Math.sin(el);
-    const dz = Math.cos(el) * (south ? 1 : -1);
-    cam.position.set(t[0], t[1] + dy * 900, t[2] + dz * 900);
-    cam.lookAt(t[0], t[1], t[2]);
-    const aspect = innerWidth / innerHeight;
-    cam.top = hh;
-    cam.bottom = -hh;
-    cam.left = -hh * aspect;
-    cam.right = hh * aspect;
-    cam.updateProjectionMatrix();
+    cam.position.set(
+      t[0] + (dir[0] / len) * d,
+      t[1] + (dir[1] / len) * d,
+      t[2] + (dir[2] / len) * d,
+    );
+    s.controls.target.set(t[0], t[1], t[2]);
+    s.controls.update();
     s.render();
-  }, [target, halfH, fromSouth]);
+  }, [target, dist, fromSouth]);
 }
 
 const server = spawn(process.execPath, [path.join(root, 'src/server/main.js')], {
@@ -109,7 +112,7 @@ try {
     const c = t.pitBoxes[Math.floor(t.pitBoxes.length / 2)].pos;
     return [c.x, 0, c.z + 14];
   });
-  await aimAt(page, pit, 55);
+  await aimAt(page, pit, 110);
   await sleep(250);
   await page.screenshot({ path: path.join(outDir, 'shot-2-pit-lane.png') });
   console.log('shot-2-pit-lane');
@@ -124,7 +127,7 @@ try {
     const p = t.pointAt(0);
     return [p.x, 8, p.z + 4];
   });
-  await aimAt(page, gantry, 18);
+  await aimAt(page, gantry, 36);
   await sleep(250);
   await page.screenshot({ path: path.join(outDir, 'shot-3-start-gantry.png') });
   console.log('shot-3-start-gantry');
@@ -149,7 +152,7 @@ try {
     return [p.x + nx * sgn * 20, 4, p.z + nz * sgn * 20];
   });
   // shoot from over the track so we see the seat rows, not the stand's back
-  await aimAt(page, stand, 20, false);
+  await aimAt(page, stand, 40, false);
   await sleep(250);
   await page.screenshot({ path: path.join(outDir, 'shot-4-grandstand.png') });
   console.log('shot-4-grandstand');

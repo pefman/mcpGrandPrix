@@ -30,7 +30,7 @@ describe('makeCarMesh (MCPG-45 voxel car)', () => {
     const meshes = parts(g);
     expect(meshes).toHaveLength(10);
     for (const m of meshes) expect(m.geometry.type).toBe('BoxGeometry');
-    expect(g.scale.x).toBeCloseTo(1.9); // oversized for the 1/4-res buffer
+    expect(g.scale.x).toBeCloseTo(1.9); // oversized so the car reads at diorama distance
   });
 
   it('tags exactly body/splitter/wing as livery, painted with the car color', () => {
@@ -84,21 +84,36 @@ describe('makeCarMesh (MCPG-45 voxel car)', () => {
   });
 });
 
-describe('sign prop (MCPG-45 environment)', () => {
-  it('is a post + panel, panel above the ground', () => {
+describe('sign prop (MCPG-45 environment; MCPG-66: merged single mesh)', () => {
+  // MCPG-66 bakes a prop's colored boxes into one merged vertex-colored
+  // geometry (one draw call per prop at full-resolution rendering), so the
+  // assertions now check the merged mesh's bounds and vertex colors.
+  function vertexColors(geo) {
+    const set = new Set();
+    const a = geo.attributes.color;
+    const c = new THREE.Color();
+    for (let i = 0; i < a.count; i++) {
+      // attribute holds working-space (linear) values; getHexString()
+      // converts back to sRGB for the comparison
+      c.setRGB(a.getX(i), a.getY(i), a.getZ(i));
+      set.add(`#${c.getHexString()}`);
+    }
+    return set;
+  }
+  const hex = (v) => `#${new THREE.Color(v).getHexString()}`;
+
+  it('bakes post + panel into one mesh: 5 m post, 8 m panel near the top', () => {
     const g = buildProp({ type: 'sign', x: 10, z: -20, rot: 1.2 }, { next: () => 0.5, int: () => 1, chance: () => false, pick: (a) => a[0] });
     expect(g).toBeTruthy();
     const meshes = [];
     g.traverse((o) => { if (o.isMesh) meshes.push(o); });
-    expect(meshes).toHaveLength(2);
-    // panel: the wider, brighter one, near the top
-    const [post, panel] = meshes.sort((a, b) => a.geometry.parameters.width - b.geometry.parameters.width);
-    expect(panel.geometry.parameters.width).toBe(8);
-    expect(panel.position.y).toBeGreaterThan(post.position.y - 1);
-    expect(panel.position.y).toBeGreaterThan(2.5);
-    // defaults: 5 m post, amber panel
-    expect(post.geometry.parameters.height).toBeCloseTo(5);
-    expect(hex(panel.material.color)).toBe(hex(0xffc53d));
+    expect(meshes).toHaveLength(1);
+    const box = new THREE.Box3().setFromBufferAttribute(meshes[0].geometry.attributes.position);
+    expect(box.max.y - box.min.y).toBeCloseTo(5, 1); // 5 m post
+    expect(box.max.x - box.min.x).toBeCloseTo(8, 1); // 8 m wide panel
+    const cols = vertexColors(meshes[0].geometry);
+    expect(cols).toContain(hex(0xffc53d)); // default amber panel
+    expect(cols).toContain(hex(0x3a4152)); // post
     expect(g.position.x).toBe(10);
     expect(g.position.z).toBe(-20);
     expect(g.rotation.y).toBeCloseTo(1.2);
@@ -108,11 +123,10 @@ describe('sign prop (MCPG-45 environment)', () => {
     const g = buildProp({ type: 'sign', x: 0, z: 0, w: 12, h: 7, color: '#0a84ff' }, { next: () => 0.5, int: () => 1, chance: () => false, pick: (a) => a[0] });
     const meshes = [];
     g.traverse((o) => { if (o.isMesh) meshes.push(o); });
-    const panel = meshes.find((m) => m.geometry.parameters.width === 12);
-    expect(panel).toBeTruthy();
-    expect(hex(panel.material.color)).toBe('#0a84ff');
-    const post = meshes.find((m) => m.geometry.parameters.width === 0.8);
-    expect(post.geometry.parameters.height).toBeCloseTo(7);
+    const box = new THREE.Box3().setFromBufferAttribute(meshes[0].geometry.attributes.position);
+    expect(box.max.y - box.min.y).toBeCloseTo(7, 1);
+    expect(box.max.x - box.min.x).toBeCloseTo(12, 1);
+    expect(vertexColors(meshes[0].geometry)).toContain('#0a84ff');
   });
 
   it('unknown prop types still build nothing', () => {

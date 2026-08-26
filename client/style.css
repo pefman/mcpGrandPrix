@@ -33,7 +33,6 @@ html, body {
   position: fixed;
   inset: 0;
   display: block;
-  image-rendering: pixelated; /* chunky pixels: the renderer draws into a 1/4-res buffer (MCPG-27) */
 }
 
 .hidden { display: none !important; }
