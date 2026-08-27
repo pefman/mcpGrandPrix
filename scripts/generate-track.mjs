@@ -23,16 +23,21 @@
  *   FILLET (circular arc tangent to both, radius clamped to fit the
  *   adjacent straights). Tiny fillets collapse to a bare anchor point
  *   that the engine's Catmull-Rom rounds.
- *   Dense resample (~5 m on straights, ~2.5 m on arcs, all gaps >= 2 m
+ *   Dense resample (~5 m on straights, >= 3 m on arcs, all gaps >= 2 m
  *   after the engine rescale - the contract's waypoint-spacing floor);
  *   same length-fit as before (multiple of 100, clamped 800-1300 m).
  *
  * BUDGET GATES (Leclerc's tuning-run acceptance list, MCPG-72):
- *   - longest straight >= 25% of lap and located in
- *     s in [L-140, L] U [0, 140] (start/finish mid-straight)
- *   - max curvature over s in [0, 110] <= 0.012
+ *   - longest straight >= 25% (and <= 40%) of lap, located in
+ *     s in [L-0.22L, L] U [0, 0.22L] (start/finish mid-straight)
+ *   - max curvature over s in [0, 110] <= 0.020 (clean pit window)
  *   - 2-3 more straight runs >= 60 m on the rest of the lap
- *   - per-style curb-corner count (flow 6-11, technical 12-16, city 10-16)
+ *   - per-style corner quality (MCPG-74 re-gate): structural fillet
+ *     corners with r >= 6 m >= style floor, and the engine's curb-run
+ *     metric (curvature >= 0.021 1/m over a >= 15 m arc, exactly what
+ *     the client paints) at or below a style ceiling. The spline fit
+ *     washes the run metric out (packs 1-2 measured 0-1 runs on it),
+ *     so it can only act as a ceiling
  *   A track that fails any gate is deterministically reseeded
  *   (offset +1, up to 8 retries) so the JSON the script writes is the
  *   first seed that passes every gate.
@@ -45,6 +50,7 @@
  *   node scripts/generate-track.mjs --seed 42 --style flow --out tracks/breeze-cove.json
  *   node scripts/generate-track.mjs --seed 42 --style flow --out tracks/ --id breeze-cove --name "Breeze Cove"
  *   node scripts/generate-track.mjs --seed 7 --style city --palette rain-midnight --out tracks/
+ *   node scripts/generate-track.mjs --seed 300 --style desert --out tracks/ --id sirocco-dunes
  *   node scripts/generate-track.mjs --pack 20 --style auto --out tracks/   # stage a pack
  *
  * WORKFLOW (pack -> ship)
@@ -69,13 +75,20 @@ import { validateTrackDef } from '../client/js/trackContract.js';
 
 // ---------------------------------------------------------------- styles ---
 // Per style: spine params, fillet radius pool, road width, palette variants,
-// scatter, name parts. Two curated palettes per style: one reuses a
-// shipped, render-proven palette (coastal day / alpine day / night neon),
-// one is new (dusk lagoon, dusk canyon, rain midnight).
+// scatter, name parts. Palettes are pure theme data blocks the engine
+// renders generically (client/js/scene.js consumes theme.* colors; there is
+// no per-palette engine code). The day/neon ones reuse render-proven
+// palettes from shipped maps (coastal-palm, mountain-hairpins, city-night);
+// the others are curated moods. MCPG-74 (pack 3) adds the desert-day and
+// alpine-dusk palettes plus five single-mood presets (desert / alpine /
+// city-rain / lagoon / canyon) so each map in a feedback pack has its own
+// preset/knob combination.
 //
 // Spine knobs the feedback loop turns (MCPG-72):
 //   K:               total anchor count (1 start + 2 straights + K-3 corners)
-//   rRange:          base star radius (m) - sets the overall circuit scale
+//   rRange:          base star radius (m) - sets the overall circuit scale.
+//                    MCPG-74: tuned so the fitted lap lands ~1150-1250 m
+//                    (pack 2's maps all clamped at the 1300 m ceiling).
 //   mainDeg:         angular window of the main straight (deg) - wider =
 //                    longer straight (capped by the chord-to-radius ratio)
 //   straightMix:     fraction of non-main windows that are "wide straight"
@@ -88,11 +101,103 @@ import { validateTrackDef } from '../client/js/trackContract.js';
 //   angularJitter:   per-anchor position jitter (m) - small deviations
 //                    from a regular polygon
 //   radiusJitter:    per-anchor radius jitter (frac of base R)
+//   propTypes:       optional hand-prop pool (default: buildings ?
+//                    [sign,lamp,building] : [sign,rock,palm])
+// Curated palettes (theme data only, see the table above).
+const PAL_COASTAL_DAY = {
+  // day coastal (from coastal-palm, proven)
+  sky: '#5ecdf6',
+  ground: { base: '#f6de9a', spot: '#e3c276', patch: '#d3ab5e', tileM: 6 },
+  road: { base: '#4a4f5e', spot: '#454a57', tileM: 3 },
+  curb: { red: '#e8362e', white: '#fdf6e8', threshold: 0.02 },
+  pit: '#98a0b0', barriers: true,
+  ambient: { sky: '#d8f4ff', ground: '#e8cf8e', intensity: 0.75 },
+  sun: { color: '#fff3d6', intensity: 1 },
+  water: '#19b8c9', fxAccent: '#ffd166',
+};
+const PAL_LAGOON_DUSK = {
+  // dusk lagoon
+  sky: '#3d4b8d',
+  ground: { base: '#c8b06a', spot: '#b39d5c', patch: '#9d8a4e', tileM: 6 },
+  road: { base: '#474c5c', spot: '#424756', tileM: 3 },
+  curb: { red: '#e8542e', white: '#f7ead2', threshold: 0.02 },
+  pit: '#8f93a6', barriers: true,
+  ambient: { sky: '#7d86c9', ground: '#6f6a4a', intensity: 0.85 },
+  sun: { color: '#ffb27d', intensity: 0.9 },
+  water: '#2e6f8f', fxAccent: '#ffb35c',
+};
+const PAL_ALPINE_DAY = {
+  // day alpine (from mountain-hairpins, proven)
+  sky: '#7fb5ea',
+  ground: { base: '#58b649', spot: '#4aa43e', patch: '#3c9033', tileM: 6 },
+  road: { base: '#4a4f5e', spot: '#454a57', tileM: 3 },
+  curb: { red: '#e8362e', white: '#fdf6e8' },
+  pit: '#8b94a8', barriers: true,
+  ambient: { sky: '#d9ecff', ground: '#4a8f3c', intensity: 0.75 },
+  sun: { color: '#fff6e0', intensity: 1 },
+  fxAccent: '#7de8ff',
+};
+const PAL_CANYON_DUSK = {
+  // dusk canyon
+  sky: '#7d4a2e',
+  ground: { base: '#b3804a', spot: '#a06f3e', patch: '#8f6236', tileM: 6 },
+  road: { base: '#454a58', spot: '#404552', tileM: 3 },
+  curb: { red: '#e8542e', white: '#f7ead2' },
+  pit: '#8f93a6', barriers: true,
+  ambient: { sky: '#d98a5c', ground: '#7a5a38', intensity: 0.85 },
+  sun: { color: '#ffb27d', intensity: 1 },
+  fxAccent: '#ffd166',
+};
+const PAL_NEON_NIGHT = {
+  // night neon (from city-night, proven)
+  sky: '#0a0d1a',
+  ground: { base: '#646a7a', spot: '#767c8e', patch: '#535868', tileM: 5 },
+  road: { base: '#9598a8', spot: '#9ea1b1', tileM: 3 },
+  curb: { red: '#ff2f4e', white: '#f2f2f8' },
+  pit: '#b3b4c4', barriers: true,
+  ambient: { sky: '#4a5584', ground: '#1a1e2e', intensity: 2.4 },
+  sun: { color: '#8fa3ff', intensity: 2 },
+  fxAccent: '#ffb35c',
+};
+const PAL_RAIN_MIDNIGHT = {
+  // rain midnight
+  sky: '#0d1420',
+  ground: { base: '#4d5468', spot: '#5a6178', patch: '#41485c', tileM: 5 },
+  road: { base: '#7e8394', spot: '#878c9e', tileM: 3 },
+  curb: { red: '#ff2f4e', white: '#e8ecf4' },
+  pit: '#9a9db0', barriers: true,
+  ambient: { sky: '#3c4a74', ground: '#151a28', intensity: 2.6 },
+  sun: { color: '#6fa8ff', intensity: 1.6 },
+  water: '#27405e', fxAccent: '#7de8ff',
+};
+const PAL_DESERT_DAY = {
+  // desert day (MCPG-74 pack 3): hot midday, sandy ground, hazy bright sky
+  sky: '#8ecdf0',
+  ground: { base: '#d9b06c', spot: '#cfa65f', patch: '#bfa052', tileM: 6 },
+  road: { base: '#5a554e', spot: '#544f48', tileM: 3 },
+  curb: { red: '#d94f35', white: '#f5ead0' },
+  pit: '#a89878', barriers: true,
+  ambient: { sky: '#eaf6ff', ground: '#d9b06c', intensity: 0.8 },
+  sun: { color: '#fff2d0', intensity: 1.1 },
+  fxAccent: '#7de8ff',
+};
+const PAL_ALPINE_DUSK = {
+  // alpine dusk (MCPG-74 pack 3): snow ground, low warm sun, dusk purple sky
+  sky: '#5a5f9e',
+  ground: { base: '#e8edf4', spot: '#dbe3ec', patch: '#c8d2e0', tileM: 6 },
+  road: { base: '#454a58', spot: '#3f4452', tileM: 3 },
+  curb: { red: '#e8542e', white: '#f7ead2' },
+  pit: '#8f93a6', barriers: true,
+  ambient: { sky: '#8d92c9', ground: '#8a93ad', intensity: 0.9 },
+  sun: { color: '#ffb27d', intensity: 0.8 },
+  fxAccent: '#7de8ff',
+};
+
 const STYLES = {
   flow: {
     roadWidthM: 13,
     K: [7, 9],             // total anchors: 4-6 corners (fewer = longer main-straight %)
-    rRange: [180, 230],    // large radius so the main-straight chord dominates
+    rRange: [175, 235],    // large radius so the main-straight chord dominates
     mainDeg: [140, 165],   // main straight: 140-165 deg chord (dominant feature)
     straightMix: 0.30,     // ~30% of the non-main windows are wide-straight "DRS" runs
     filletRange: [8, 20],  // corners are mid-tight sweepers
@@ -100,28 +205,7 @@ const STYLES = {
     radiusJitter: 0.04,    // small radius jitter to keep the star shape clean
     scatter: { type: 'palm', count: [24, 40] },
     water: true,
-    palettes: [
-      { // day coastal (from coastal-palm, proven)
-        sky: '#5ecdf6',
-        ground: { base: '#f6de9a', spot: '#e3c276', patch: '#d3ab5e', tileM: 6 },
-        road: { base: '#4a4f5e', spot: '#454a57', tileM: 3 },
-        curb: { red: '#e8362e', white: '#fdf6e8', threshold: 0.02 },
-        pit: '#98a0b0', barriers: true,
-        ambient: { sky: '#d8f4ff', ground: '#e8cf8e', intensity: 0.75 },
-        sun: { color: '#fff3d6', intensity: 1 },
-        water: '#19b8c9', fxAccent: '#ffd166',
-      },
-      { // dusk lagoon
-        sky: '#3d4b8d',
-        ground: { base: '#c8b06a', spot: '#b39d5c', patch: '#9d8a4e', tileM: 6 },
-        road: { base: '#474c5c', spot: '#424756', tileM: 3 },
-        curb: { red: '#e8542e', white: '#f7ead2', threshold: 0.02 },
-        pit: '#8f93a6', barriers: true,
-        ambient: { sky: '#7d86c9', ground: '#6f6a4a', intensity: 0.85 },
-        sun: { color: '#ffb27d', intensity: 0.9 },
-        water: '#2e6f8f', fxAccent: '#ffb35c',
-      },
-    ],
+    palettes: [PAL_COASTAL_DAY, PAL_LAGOON_DUSK],
     paletteNames: ['coastal-day', 'lagoon-dusk'],
     nameAdj: ['Breeze', 'Lagoon', 'Palm', 'Tide', 'Meadow', 'Drift'],
     nameNoun: ['Bay', 'Cove', 'Meadows', 'Shoreline', 'Gardens', 'Ridge'],
@@ -129,7 +213,7 @@ const STYLES = {
   technical: {
     roadWidthM: 12,
     K: [10, 13],           // total anchors: 7-10 corners
-    rRange: [160, 200],    // larger radius for longer main straight
+    rRange: [178, 228],    // larger radius for longer main straight
     mainDeg: [125, 150],   // main straight: 125-150 deg
     straightMix: 0.20,     // fewer wide-straight runs (technical tracks are twistier)
     filletRange: [6, 14],  // tighter pool, hairpin-capable
@@ -137,28 +221,7 @@ const STYLES = {
     radiusJitter: 0.04,
     scatter: { type: 'pine', count: [30, 60] },
     water: false,
-    palettes: [
-      { // day alpine (from mountain-hairpins, proven)
-        sky: '#7fb5ea',
-        ground: { base: '#58b649', spot: '#4aa43e', patch: '#3c9033', tileM: 6 },
-        road: { base: '#4a4f5e', spot: '#454a57', tileM: 3 },
-        curb: { red: '#e8362e', white: '#fdf6e8' },
-        pit: '#8b94a8', barriers: true,
-        ambient: { sky: '#d9ecff', ground: '#4a8f3c', intensity: 0.75 },
-        sun: { color: '#fff6e0', intensity: 1 },
-        fxAccent: '#7de8ff',
-      },
-      { // dusk canyon
-        sky: '#7d4a2e',
-        ground: { base: '#b3804a', spot: '#a06f3e', patch: '#8f6236', tileM: 6 },
-        road: { base: '#454a58', spot: '#404552', tileM: 3 },
-        curb: { red: '#e8542e', white: '#f7ead2' },
-        pit: '#8f93a6', barriers: true,
-        ambient: { sky: '#d98a5c', ground: '#7a5a38', intensity: 0.85 },
-        sun: { color: '#ffb27d', intensity: 1 },
-        fxAccent: '#ffd166',
-      },
-    ],
+    palettes: [PAL_ALPINE_DAY, PAL_CANYON_DUSK],
     paletteNames: ['alpine-day', 'canyon-dusk'],
     nameAdj: ['Aiguille', 'Canyon', 'Serpent', 'Granite', 'Switchback', 'Col de'],
     nameNoun: ['Pass', 'Gorge', 'Ridge', 'Saddle', 'Col', 'Ravine'],
@@ -166,7 +229,7 @@ const STYLES = {
   city: {
     roadWidthM: 13,
     K: [8, 11],            // total anchors: 5-8 corners
-    rRange: [160, 200],    // larger radius for longer main straight
+    rRange: [172, 222],    // larger radius for longer main straight
     mainDeg: [125, 150],   // main straight: 125-150 deg
     straightMix: 0.20,     // medium mix of wide-straight runs
     filletRange: [6, 16],  // medium pool, no extreme hairpins
@@ -175,31 +238,100 @@ const STYLES = {
     scatter: { type: 'lamp', count: [12, 24] },
     water: false,
     buildings: true,
-    palettes: [
-      { // night neon (from city-night, proven)
-        sky: '#0a0d1a',
-        ground: { base: '#646a7a', spot: '#767c8e', patch: '#535868', tileM: 5 },
-        road: { base: '#9598a8', spot: '#9ea1b1', tileM: 3 },
-        curb: { red: '#ff2f4e', white: '#f2f2f8' },
-        pit: '#b3b4c4', barriers: true,
-        ambient: { sky: '#4a5584', ground: '#1a1e2e', intensity: 2.4 },
-        sun: { color: '#8fa3ff', intensity: 2 },
-        fxAccent: '#ffb35c',
-      },
-      { // rain midnight
-        sky: '#0d1420',
-        ground: { base: '#4d5468', spot: '#5a6178', patch: '#41485c', tileM: 5 },
-        road: { base: '#7e8394', spot: '#878c9e', tileM: 3 },
-        curb: { red: '#ff2f4e', white: '#e8ecf4' },
-        pit: '#9a9db0', barriers: true,
-        ambient: { sky: '#3c4a74', ground: '#151a28', intensity: 2.6 },
-        sun: { color: '#6fa8ff', intensity: 1.6 },
-        water: '#27405e', fxAccent: '#7de8ff',
-      },
-    ],
+    palettes: [PAL_NEON_NIGHT, PAL_RAIN_MIDNIGHT],
     paletteNames: ['neon-night', 'rain-midnight'],
     nameAdj: ['Neon', 'Metro', 'Midnight', 'Riverside', 'Grand', 'Static'],
     nameNoun: ['Circuit', 'Metro', 'Boulevard', 'Spurs', 'Grid', 'Exchange'],
+  },
+  // ---- pack 3 (MCPG-74): single-mood presets, one per feedback map ----
+  desert: {
+    // bright desert day: 3-5 long sweeping dune corners, two long dry runs
+    roadWidthM: 13,
+    K: [6, 8],
+    rRange: [195, 240],
+    mainDeg: [150, 175],
+    straightMix: 0.35,
+    filletRange: [12, 28],  // sweeping dune bends only, no hairpins
+    angularJitter: 0.08,
+    radiusJitter: 0.05,
+    scatter: { type: 'rock', count: [12, 26] },
+    water: false,
+    propTypes: ['sign', 'rock'], // no palms in the dunes
+    palettes: [PAL_DESERT_DAY],
+    paletteNames: ['desert-day'],
+    nameAdj: ['Sirocco', 'Dune', 'Mesa', 'Gypsum', 'Oasis', 'Caliche'],
+    nameNoun: ['Dunes', 'Pass', 'Crossing', 'Flats', 'Ridge', 'Gorge'],
+  },
+  alpine: {
+    // snow alpine at dusk: hairpin-heavy switchback spine
+    roadWidthM: 12,
+    K: [10, 12],
+    rRange: [195, 240],
+    mainDeg: [135, 155],
+    straightMix: 0.25,
+    filletRange: [5, 12],   // tight pool: hairpin-capable switchbacks
+    angularJitter: 0.10,
+    radiusJitter: 0.05,
+    scatter: { type: 'pine', count: [40, 70] },
+    water: false,
+    palettes: [PAL_ALPINE_DUSK],
+    paletteNames: ['alpine-dusk'],
+    nameAdj: ['Chamois', 'Glacier', 'Aiguille', 'Powder', 'Serpent', 'Cornice'],
+    nameNoun: ['Col', 'Pass', 'Ridge', 'Serpentine', 'Gorge', 'Switchback'],
+  },
+  'city-rain': {
+    // wet midnight city grid (pack 1-2 never used the rain-midnight palette)
+    roadWidthM: 13,
+    K: [9, 11],
+    rRange: [182, 229],
+    mainDeg: [120, 140],
+    straightMix: 0.30,
+    filletRange: [7, 15],
+    angularJitter: 0.10,
+    radiusJitter: 0.04,
+    scatter: { type: 'lamp', count: [14, 26] },
+    water: false,
+    buildings: true,
+    palettes: [PAL_RAIN_MIDNIGHT],
+    paletteNames: ['rain-midnight'],
+    nameAdj: ['Rain', 'Canal', 'Riverside', 'Harbor', 'Midnight', 'Static'],
+    nameNoun: ['Boulevard', 'Dockside', 'Exchange', 'Avenue', 'Junction', 'Grid'],
+  },
+  lagoon: {
+    // dusk lagoon circuit, twistier than the flow preset (more corners,
+    // more DRS windows) - same palette mood as pack 2's breeze-cove
+    roadWidthM: 13,
+    K: [9, 11],
+    rRange: [195, 238],
+    mainDeg: [130, 155],
+    straightMix: 0.40,
+    filletRange: [8, 18],
+    angularJitter: 0.10,
+    radiusJitter: 0.04,
+    scatter: { type: 'palm', count: [26, 44] },
+    water: true,
+    palettes: [PAL_LAGOON_DUSK],
+    paletteNames: ['lagoon-dusk'],
+    nameAdj: ['Tide', 'Coral', 'Salt', 'Lagoon', 'Drift', 'Marina'],
+    nameNoun: ['Basin', 'Shoal', 'Gardens', 'Landing', 'Terrace', 'Circuit'],
+  },
+  canyon: {
+    // dusk canyon with long run-outs (fewer, wider anchors than the
+    // technical preset) - same palette mood as pack 2's granite-pass
+    roadWidthM: 12,
+    K: [7, 9],
+    rRange: [184, 234],
+    mainDeg: [140, 165],
+    straightMix: 0.40,
+    filletRange: [10, 22],
+    angularJitter: 0.10,
+    radiusJitter: 0.05,
+    scatter: { type: 'pine', count: [20, 40] },
+    water: false,
+    palettes: [PAL_CANYON_DUSK],
+    paletteNames: ['canyon-dusk'],
+    nameAdj: ['Mesa', 'Boulder', 'Arroyo', 'Cholla', 'Vermejo', 'Saddle'],
+    nameNoun: ['Run', 'Trestle', 'Saddle', 'Crossing', 'Draw', 'Pass'],
   },
 };
 
@@ -237,7 +369,7 @@ function pickCount(rng, [lo, hi]) {
  *   4. Between corner anchors the polyline follows the chord (straight
  *      run); the main straight is the chord between anchor 1 and
  *      anchor K-1, with anchor 0 as its midpoint.
- *   5. The whole polyline is resampled at ~5 m on straights, ~2.5 m on
+ *   5. The whole polyline is resampled at ~5 m on straights, >= 3 m on
  *      arcs (floor 2 m to satisfy the contract), preserving the start
  *      point at index 0.
  */
@@ -379,9 +511,14 @@ function buildLoop(rng, style) {
   // The polyline visits anchors in index order: 0 -> 1 -> 2 -> ... -> K-1 -> 0
   // (closed). For each CORNER anchor we replace the polyline vertex with
   // a fillet arc — two tangent points on the adjacent chords, sampled at
-  // ~2.5 m arc steps. For STRAIGHT anchors and the START anchor we emit
+  // >= 3 m arc steps (exact tangent points bracket the samples). For
+  // STRAIGHT anchors and the START anchor we emit
   // the anchor as a single point.
+  // fillets collects the EFFECTIVE fillet radius per corner anchor (after
+  // the halfChord clamp) so the budget gate can count structural corners
+  // that survive the spline smoothing (r >= 6 m = a visible corner).
   const pts = [];
+  const fillets = [];
   for (let i = 0; i < K; i++) {
     const prev = (i - 1 + K) % K;
     const next = (i + 1) % K;
@@ -407,6 +544,7 @@ function buildLoop(rng, style) {
       const maxR = halfChord * Math.tan(halfAng);
       if (r > maxR) r = maxR;
       if (r < 1) r = 1; // floor: a 1-m fillet is still a "rounded corner" w/ minimum impact
+      fillets.push(r);
       // Recompute d with the effective r
       const d = r / Math.tan(halfAng);
       const tIn = {
@@ -417,9 +555,20 @@ function buildLoop(rng, style) {
         x: pHere.x + u2.x * d,
         z: pHere.z + u2.z * d,
       };
-      // arc length and sample count
+      // arc length and sample count. >= 3 m sample spacing keeps the
+      // >= 2 m waypoint floor from cascading-sliding dense clusters into
+      // kinks (pack 2 maps showed ~1.7 m radius wiggles from that,
+      // MCPG-74). Very short arcs (< 6 m) get just the two tangent
+      // points - a straight cut the Catmull-Rom rounds, same as the old
+      // tiny-fillet collapse.
       const arcLen = r * ang;
-      const arcSegs = Math.max(2, Math.ceil(arcLen / 2.5));
+      const ARC_SAMPLE_M = 3;
+      const arcSegs = arcLen >= 6 ? Math.max(2, Math.round(arcLen / ARC_SAMPLE_M)) : 0;
+      // Exact tangent points bracket the arc samples so the polyline stays
+      // tangent-continuous where the straight meets the arc (midpoint-only
+      // sampling chords across the junction and the fitted Catmull-Rom
+      // kinks there - pack 2 maps showed ~1.7 m radius wiggles, MCPG-74).
+      pts.push([tIn.x, tIn.z]);
       // walk the arc from tIn to tOut along a circle of radius r centered
       // on the angle bisector
       for (let k = 0; k < arcSegs; k++) {
@@ -446,6 +595,7 @@ function buildLoop(rng, style) {
           iz - (cdx / len) * sag * sagT * turnSign,
         ]);
       }
+      pts.push([tOut.x, tOut.z]);
     } else {
       // straight or start anchor: emit the anchor as a single point
       pts.push([pHere.x, pHere.z]);
@@ -471,23 +621,46 @@ function buildLoop(rng, style) {
       }
     }
   }
-  // Make sure the wrap point is included exactly once
-  densePts.push([pts[pts.length - 1][0], pts[pts.length - 1][1]]);
+  // The final sparse vertex is already included (it is the k=0 point of
+  // the wrap segment, pushed above) - do NOT append it again: the old
+  // extra push duplicated it at the end of the list and the wrap became
+  // "... near-start -> B -> start", a ~160 m V-spike that the fitted
+  // Catmull-Rom rounded into a ~1.6 m hairpin wiggle (pack 2 maps,
+  // MCPG-74).
 
   // Round to 0.1 m and enforce the contract's >= 2 m floor.
   const r1Pts = densePts.map(([x, z]) => [r1(x), r1(z)]);
-  for (let i = 0; i < r1Pts.length; i++) {
-    const a = r1Pts[i];
-    const b = r1Pts[(i + 1) % r1Pts.length];
-    const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    if (d < 2) {
-      const ux = d > 1e-6 ? (b[0] - a[0]) / d : 1;
-      const uz = d > 1e-6 ? (b[1] - a[1]) / d : 0;
-      b[0] = a[0] + ux * 2;
-      b[1] = a[1] + uz * 2;
+  // >= 2 m floor: DROP the nearer point instead of sliding it - sliding
+  // pushes the point along the segment and kinks the fitted spline where
+  // several slides cascade on a dense cluster (pack 2 maps showed ~1.7 m
+  // radius wiggles, MCPG-74). Dropping keeps the polyline a subsequence
+  // of the dense samples, so the fit stays smooth. The start point
+  // (index 0) never drops; a sub-2 m wrap gap (last -> first) slides the
+  // LAST point instead so the start line never moves.
+  let guard = 0;
+  while (guard++ < 10 * r1Pts.length) {
+    let changed = false;
+    for (let i = 0; i < r1Pts.length; i++) {
+      const j = (i + 1) % r1Pts.length;
+      const a = r1Pts[i];
+      const b = r1Pts[j];
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (d >= 2) continue;
+      if (j !== 0) {
+        r1Pts.splice(j, 1);
+        changed = true;
+        break; // re-walk: indices shifted
+      }
+      // wrap pair: slide the last point away from the start point
+      const ux = d > 1e-6 ? (a[0] - b[0]) / d : -1;
+      const uz = d > 1e-6 ? (a[1] - b[1]) / d : 0;
+      a[0] = b[0] + ux * 2;
+      a[1] = b[1] + uz * 2;
+      changed = true;
     }
+    if (!changed) break; // all gaps >= 2 m
   }
-  return { pts: r1Pts, n: r1Pts.length };
+  return { pts: r1Pts, n: r1Pts.length, fillets };
 }
 
 /** Unit vector from a -> b (zero vector guarded). */
@@ -606,16 +779,28 @@ function maxCurvInWindow(curv, arclen, s0, s1) {
   return max;
 }
 
-/** Per-style budget gates (MCPG-72 tuning run, Leclerc acceptance list).
- *  Calibrated to the realistic range the tuned generator + Catmull-Rom
- *  actually hits (the original spec was for tighter tracks; the engine's
- *  Catmull-Rom smoothing means a corner needs ~90 deg at r<=10m to clear
- *  the 15m+ 0.021 threshold). Numbers below the floor = pass with
- *  warning (no reseed); numbers above the ceiling = reseed. */
+/** Per-style corner-quality budget (MCPG-74 two-part re-gate).
+ *  Two metrics, because the engine's curb-run metric (client/js/track.js
+ *  curbRuns: curvature >= 0.021 1/m sustained over a >= 15 m arc = one
+ *  curb run) is mostly washed out by the Catmull-Rom fit: every accepted
+ *  map in packs 1-2 measures 0-1 runs on it (hand-authored 0-6), so it
+ *  can only act as a CEILING (catch bumpy maps that would paint curbs
+ *  all over the track). The FLOOR is the generator's structural metric:
+ *  how many fillet events kept an effective radius >= 6 m (a visible
+ *  corner after spline smoothing; tiny fillets round away). The older
+ *  single gate - 90deg-at-r<=10m spec counts - failed even the
+ *  hand-authored coastal-palm, and the raw engine run count cannot
+ *  separate "twisty" from "smoothed" on CR-fitted maps, so it cannot
+ *  floor anything. */
 const STYLE_BUDGETS = {
-  flow: { curbCornerCount: [1, 11] },
-  technical: { curbCornerCount: [2, 16] },
-  city: { curbCornerCount: [2, 16] },
+  flow: { minEffCorners: 3, maxCurbRuns: 12 },
+  technical: { minEffCorners: 5, maxCurbRuns: 16 },
+  city: { minEffCorners: 4, maxCurbRuns: 16 },
+  desert: { minEffCorners: 2, maxCurbRuns: 12 },
+  alpine: { minEffCorners: 5, maxCurbRuns: 20 },
+  'city-rain': { minEffCorners: 4, maxCurbRuns: 16 },
+  lagoon: { minEffCorners: 4, maxCurbRuns: 12 },
+  canyon: { minEffCorners: 3, maxCurbRuns: 12 },
 };
 
 /**
@@ -624,29 +809,33 @@ const STYLE_BUDGETS = {
  * empty if all gates pass.
  *
  * Gates (per Leclerc's handoff):
- *   1. longest straight >= 25% of lap, located within
- *      s in [L-140, L] U [0, 140] (start/finish mid-straight)
- *   2. max curvature over s in [0, 110] <= 0.012
- *      (the pit window is at s=15..95, so 110m of clean start/pit
- *      straight)
+ *   1. longest straight >= 25% of lap (and <= 40%, no dragstrip), located
+ *      within s in [L-0.22L, L] U [0, 0.22L] (start/finish mid-straight)
+ *   2. max curvature over s in [0, 110] <= 0.020
+ *      (the pit window is at s=15..95; 0.020 = the engine's default curb
+ *      threshold, so anything sharper in the window would be a real corner)
  *   3. 2-3 more straight runs of >= 60 m on the rest of the lap
- *   4. per-style curb-corner count (flow 6-11, technical 12-16, city 10-16)
+ *   4. per-style corner quality (see STYLE_BUDGETS): structural fillet
+ *      corners with effective r >= 6 m >= minEffCorners, and the engine's
+ *      curb-run count (0.021 1/m, >= 15 m runs) <= maxCurbRuns
  */
-function checkBudgets(curve, arclen, lengthM, curv, styleName) {
+function checkBudgets(curve, arclen, lengthM, curv, styleName, effCorners) {
   const reasons = [];
   const budget = STYLE_BUDGETS[styleName];
   if (!budget) return { ok: true, reasons };
 
-  // 1. longest straight >= 25% of lap, in start window
-  //    The window is [L-180, L] U [0, 180] (180 m before or after the seam;
-  //    the start line sits at s=0, mid-main-straight). We chose 180 (vs
-  //    the spec's 140) because the Catmull-Rom rounding at the start-line
-  //    boundary eats ~10-20 m of usable straight, and the main straight
-  //    itself is ~260-340 m on a 1000-1300 m lap, so half = 130-170 m.
+  // 1. longest straight >= 25% of lap (and <= 40%, no dragstrip), located
+  //    in [L-0.22L, L] U [0, 0.22L] (start/finish mid-straight). The half
+  //    window is proportional because the main straight grows with the
+  //    circuit: a 40%-of-lap straight centered on the seam extends +-20%
+  //    before/after it (MCPG-74: pack 3's bigger circuits produced
+  //    380-460 m main straights that overshot the old fixed +-180 m
+  //    window).
   const low = longestRunInfo(curv, 0.012, arclen);
   const minMain = lengthM * 0.25;
+  const maxMain = lengthM * 0.40;
   const wraps = low.s0 > low.s1;
-  const HALF_WIN = 180;
+  const HALF_WIN = lengthM * 0.22;
   const inStartWindow = (low.lenM > 0) && (
     // non-wrapping case: the run sits entirely in one half-window
     (low.s0 >= lengthM - HALF_WIN && low.s1 <= lengthM) ||
@@ -656,8 +845,10 @@ function checkBudgets(curve, arclen, lengthM, curv, styleName) {
   );
   if (low.lenM < minMain - 5) {  // 5 m tolerance for the rounding/center jitter
     reasons.push(`longest straight ${low.lenM.toFixed(1)}m < 25% of lap (${minMain.toFixed(1)}m)`);
+  } else if (low.lenM > maxMain) {
+    reasons.push(`longest straight ${low.lenM.toFixed(1)}m > 40% of lap (${maxMain.toFixed(1)}m, would be a dragstrip)`);
   } else if (!inStartWindow) {
-    reasons.push(`longest straight ${low.lenM.toFixed(1)}m NOT in start window [L-${HALF_WIN}, L]U[0, ${HALF_WIN}] (s0=${low.s0.toFixed(1)}, s1=${low.s1.toFixed(1)})`);
+    reasons.push(`longest straight ${low.lenM.toFixed(1)}m NOT in start window [L-${HALF_WIN.toFixed(0)}, L]U[0, ${HALF_WIN.toFixed(0)}] (s0=${low.s0.toFixed(1)}, s1=${low.s1.toFixed(1)})`);
   }
 
   // 2. max curvature over s in [0, 110] <= 0.020
@@ -701,11 +892,13 @@ function checkBudgets(curve, arclen, lengthM, curv, styleName) {
     reasons.push(`only ${otherStraights.length} other straight run(s) >= 60m (need 2-3)`);
   }
 
-  // 4. per-style curb-corner count
+  // 4. per-style corner quality (MCPG-74 two-part re-gate, see STYLE_BUDGETS)
   const curbCorners = countHotRuns(curv, arclen, 0.021, 15);
-  const [lo, hi] = budget.curbCornerCount;
-  if (curbCorners < lo || curbCorners > hi) {
-    reasons.push(`curb corner count ${curbCorners} not in [${lo}, ${hi}] for style ${styleName}`);
+  if (curbCorners > budget.maxCurbRuns) {
+    reasons.push(`curb runs ${curbCorners} > ${budget.maxCurbRuns} for style ${styleName} (track would be painted curb-to-curb)`);
+  }
+  if (effCorners < budget.minEffCorners) {
+    reasons.push(`effective corners ${effCorners} < ${budget.minEffCorners} for style ${styleName} (too few visible corners)`);
   }
 
   return { ok: reasons.length === 0, reasons };
@@ -750,7 +943,7 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
   const style = STYLES[styleName];
   const rng = createRng(seed);
 
-  const { pts, n } = buildLoop(rng, style);
+  const { pts, n, fillets } = buildLoop(rng, style);
 
   // center on origin (engine rescales about the centroid; we do the same)
   let cx = 0, cz = 0;
@@ -772,6 +965,8 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
   const minTurnRadius = maxCurv > 0.005 ? r1(1 / maxCurv) : 999;
   const straightM = r1(longestRun(curv, 0.01, arclen, 25));
   const curbCorners = countHotRuns(curv, arclen, 0.021, 15);
+  // structural corner count (generator-known, spline-smoothing-proof)
+  const effCorners = fillets.filter((r) => r >= 6).length;
 
   // min distance origin -> curve (infield clearance, for water placement)
   let minOrigin = Infinity;
@@ -789,7 +984,7 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
 
   // hand props: signs facing in from the road, a couple near s=0 (start area)
   const props = [];
-  const propTypes = style.buildings ? ['sign', 'lamp', 'building'] : ['sign', 'rock', 'palm'];
+  const propTypes = style.propTypes ?? (style.buildings ? ['sign', 'lamp', 'building'] : ['sign', 'rock', 'palm']);
   const nProps = rng.int(4, 8);
   for (let k = 0; k < nProps; k++) {
     const s = k === 0 ? 12 + rng.next() * 30 : (rng.next() * lengthM + lengthM) % lengthM;
@@ -837,7 +1032,7 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
   // Contract gate (in-process). On failure the retry loop in generate()
   // will try the next seed; here we just record the result.
   const contract = validateTrackDef(def);
-  const budget = checkBudgets(curve, arclen, lengthM, curv, styleName);
+  const budget = checkBudgets(curve, arclen, lengthM, curv, styleName, effCorners);
   return {
     def,
     stats: {
@@ -845,6 +1040,7 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
       splineM: r1(rawLen),
       straightM,
       curbCorners,
+      effCorners,
       minTurnRadius,
       maxCoord: Math.max(...waypoints.map(([x, z]) => Math.max(Math.abs(x), Math.abs(z)))),
     },
@@ -941,7 +1137,7 @@ for (let k = 0; k < pack; k++) {
   fs.writeFileSync(file, JSON.stringify(def, null, 2) + '\n');
   pass++;
   console.log(`PASS ${id} (${def.name}) style=${styleName} L=${def.lengthM}m ` +
-    `straights>=25m: ${stats.straightM}m curbCorners: ${stats.curbCorners} ` +
+    `straights>=25m: ${stats.straightM}m curbRuns: ${stats.curbCorners} effCorners: ${stats.effCorners} ` +
     `minTurnR: ${stats.minTurnRadius}m maxCoord: ${Math.round(stats.maxCoord)} ` +
     `attempts=${stats.attempts ?? 1}`);
   for (const w of warnings) console.log(`     warning: ${w}`);

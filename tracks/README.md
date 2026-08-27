@@ -160,8 +160,12 @@ node scripts/generate-track.mjs --pack 20 --style auto --out tracks/   # stage a
 
 Styles: `flow` (sweepers + long straights; coastal day / dusk lagoon),
 `technical` (hairpins + chicanes; alpine day / dusk canyon), `city`
-(chicanes + tighter ring; night neon / rain midnight), `auto` (rotates).
-`lengthM` is derived from the fitted spline (800–1300 m, multiple of
+(chicanes + tighter ring; night neon / rain midnight), plus single-mood
+presets from the MCPG-74 pack-3 tuning run: `desert` (bright desert day,
+sweeping dune corners), `alpine` (snow alpine dusk, hairpin spine),
+`city-rain` (wet midnight grid), `lagoon` (dusk lagoon, twistier),
+`canyon` (dusk canyon, long run-outs). `auto` (rotates over all).
+`lengthM` is derived from the fitted spline (800-1300 m, multiple of
 100); `sectorLengthM = lengthM / 5`. `--id`/`--name` (or the file name
 stem in single-file mode) rename maps that get merged.
 
