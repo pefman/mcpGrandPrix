@@ -440,23 +440,30 @@ function buildLoop(rng, style) {
   const anchorKind = new Array(K);
 
   // main-straight-endpoint-A at +mainDeg/2
+  // main-straight-endpoint-A at +mainDeg/2. The endpoint is FILLETED (MCPG-74:
+  // a raw star vertex here is a 90-115 deg V that the fitted spline rounds
+  // into a ~2.5 m kart hook - "90 degrees turns? thats not very f1").
+  // The fillet is a gentle lead-out: the straight chord itself stays intact
+  // (the start line at its midpoint is untouched).
   anchorAngle[1] = (mainDeg / 2) * Math.PI / 180;
   anchorKind[1] = 'straight';
-  anchorFillet[1] = 0;
-  // main-straight-endpoint-B at -mainDeg/2
+  {
+    const lo = Math.max(style.filletRange[1] * 0.9, 25);
+    anchorFillet[1] = lo + rng.next() * (style.filletRange[1] * 1.4 - lo);
+  }
+  // main-straight-endpoint-B at -mainDeg/2 (same fillet treatment)
   anchorAngle[K - 1] = -(mainDeg / 2) * Math.PI / 180;
   anchorKind[K - 1] = 'straight';
-  anchorFillet[K - 1] = 0;
+  {
+    const lo = Math.max(style.filletRange[1] * 0.9, 25);
+    anchorFillet[K - 1] = lo + rng.next() * (style.filletRange[1] * 1.4 - lo);
+  }
   // corner anchors, CCW from +mainDeg/2 toward -mainDeg/2 going through +180
   let cursorAngle = anchorAngle[1];
   for (let i = 0; i < cornerCount; i++) {
     const idx = 2 + i;
     const windowRad = cornerSteps[i] * (Math.PI * 2) / K;
     anchorAngle[idx] = cursorAngle + windowRad / 2;
-    // The corner anchor's fillet radius depends on whether its window is
-    // a "wide straight" or a "tight corner". For a wide straight, we want
-    // a LARGE fillet (sweeper); for a tight corner, a SMALL fillet (hairpin).
-    // The window's "type" is determined by its size: large = wide straight.
     const isWide = windowSizes[i] > (wideDeg + tightDeg) / 2;
     const rRange = isWide
       ? [Math.max(style.filletRange[1] * 0.9, 25), style.filletRange[1] * 1.4]
@@ -519,13 +526,14 @@ function buildLoop(rng, style) {
   // that survive the spline smoothing (r >= 6 m = a visible corner).
   const pts = [];
   const fillets = [];
+  const protIdx = []; // sparse indices that must survive the 2 m floor
   for (let i = 0; i < K; i++) {
     const prev = (i - 1 + K) % K;
     const next = (i + 1) % K;
     const pPrev = anchorPos[prev];
     const pHere = anchorPos[i];
     const pNext = anchorPos[next];
-    if (anchorKind[i] === 'corner') {
+    if (anchorKind[i] === 'corner' || anchorKind[i] === 'straight') {
       // tangent point on the chord pPrev -> pHere
       const u1 = unitVec(pPrev, pHere);
       const u2 = unitVec(pHere, pNext);
@@ -544,6 +552,12 @@ function buildLoop(rng, style) {
       const maxR = halfChord * Math.tan(halfAng);
       if (r > maxR) r = maxR;
       if (r < 1) r = 1; // floor: a 1-m fillet is still a "rounded corner" w/ minimum impact
+      // Big turns need a real radius (MCPG-74): a 100deg turn through a
+      // 3 m fillet is a kart hook no matter how well it is sampled. Force
+      // turns > 70deg out to at least r=8m (a flowing F1 slow corner) when
+      // the halfChord clamp allows it; when it doesn't, the corner stays
+      // too pointy and the F1 corner-shape budget gate reseeds the map.
+      if (ang > (70 * Math.PI) / 180 && r < 8 && r < maxR) r = 8;
       fillets.push(r);
       // Recompute d with the effective r
       const d = r / Math.tan(halfAng);
@@ -555,55 +569,56 @@ function buildLoop(rng, style) {
         x: pHere.x + u2.x * d,
         z: pHere.z + u2.z * d,
       };
-      // arc length and sample count. >= 3 m sample spacing keeps the
+      // arc length and sample count. >= 2.5 m sample spacing keeps the
       // >= 2 m waypoint floor from cascading-sliding dense clusters into
       // kinks (pack 2 maps showed ~1.7 m radius wiggles from that,
-      // MCPG-74). Very short arcs (< 6 m) get just the two tangent
-      // points - a straight cut the Catmull-Rom rounds, same as the old
-      // tiny-fillet collapse.
+      // MCPG-74). Arcs shorter than 3 m collapse to the two tangent points
+      // (a straight cut the Catmull-Rom rounds) - the old 6 m threshold
+      // collapsed big-turn arcs (r*ang < 6 m) whose chord-cut the fit
+      // rounded into V-hooks, MCPG-74.
       const arcLen = r * ang;
-      const ARC_SAMPLE_M = 3;
-      const arcSegs = arcLen >= 6 ? Math.max(2, Math.round(arcLen / ARC_SAMPLE_M)) : 0;
-      // Exact tangent points bracket the arc samples so the polyline stays
-      // tangent-continuous where the straight meets the arc (midpoint-only
-      // sampling chords across the junction and the fitted Catmull-Rom
-      // kinks there - pack 2 maps showed ~1.7 m radius wiggles, MCPG-74).
-      pts.push([tIn.x, tIn.z]);
-      // walk the arc from tIn to tOut along a circle of radius r centered
-      // on the angle bisector
-      for (let k = 0; k < arcSegs; k++) {
-        const t = (k + 0.5) / arcSegs; // sample at midpoints
-        const ix = tIn.x + (tOut.x - tIn.x) * t;
-        const iz = tIn.z + (tOut.z - tIn.z) * t;
-        // sagitta = r - sqrt(r^2 - (chord/2)^2) — but our chord here is
-        // tIn -> tOut, length c. Max sagitta at midpoint = r - sqrt(r^2 - c^2/4).
-        const cdx = tOut.x - tIn.x;
-        const cdz = tOut.z - tIn.z;
-        const c = Math.hypot(cdx, cdz);
-        const sag = c >= 2 * r ? 0 : (r - Math.sqrt(Math.max(0, r * r - (c / 2) * (c / 2))));
-        // sin(pi * t) — 0 at endpoints, 1 at midpoint
-        const sagT = Math.sin(Math.PI * t);
-        // perpendicular direction to the chord (rotated 90 deg CCW)
-        const len = c > 1e-9 ? c : 1;
-        // turn sign: cross product of (pHere - pPrev) and (pNext - pHere)
+      const ARC_SAMPLE_M = 2.5;
+      const arcSegs = arcLen >= 3 ? Math.max(2, Math.round(arcLen / ARC_SAMPLE_M)) : 0;
+      if (arcSegs === 0) {
+        pts.push([tIn.x, tIn.z], [tOut.x, tOut.z]);
+        protIdx.push(pts.length - 2, pts.length - 1);
+      } else {
+        // TRUE circular arc (MCPG-74 fix): the old implementation put the
+        // samples on the tIn->tOut CHORD with a sine sagitta offset, so the
+        // first sample after tIn was already rotated by half the turn angle
+        // away from the straight's direction. The fitted Catmull-Rom kinked
+        // at the straight/arc junction; at turns >= 90 deg the kink became
+        // a ~3 m radius hook (pack 3's 118 deg dune corners - "90 degrees
+        // turns? thats not very f1"). Sampling the circle by angle keeps
+        // the polyline exactly tangent to the chords at both ends.
         const turnSign = Math.sign(
           (pHere.x - pPrev.x) * (pNext.z - pHere.z) -
           (pHere.z - pPrev.z) * (pNext.x - pHere.x),
         ) || 1;
-        pts.push([
-          ix + (cdz / len) * sag * sagT * turnSign,
-          iz - (cdx / len) * sag * sagT * turnSign,
-        ]);
+        // circle center: r from tIn along the travel-left normal
+        // ((-u1.z, u1.x) is the left normal in xz; sign flips for right)
+        const cx = tIn.x + turnSign * -u1.z * r;
+        const cz = tIn.z + turnSign * u1.x * r;
+        const phiIn = Math.atan2(tIn.z - cz, tIn.x - cx);
+        for (let k = 0; k <= arcSegs; k++) {
+          const phi = phiIn + turnSign * ang * (k / arcSegs);
+          pts.push([cx + r * Math.cos(phi), cz + r * Math.sin(phi)]);
+        }
+        // tIn (first) and tOut (last) must survive the >= 2 m waypoint
+        // floor: dropping one of them breaks tangent continuity at the
+        // straight/arc junction and the fitted spline kinks into a tight
+        // hook (MCPG-74: pack 3's 100-120 deg kart corners at r ~ 2.5 m)
+        protIdx.push(pts.length - 1 - arcSegs, pts.length - 1);
       }
-      pts.push([tOut.x, tOut.z]);
     } else {
-      // straight or start anchor: emit the anchor as a single point
+      // start anchor: emit the single chord-midpoint (on the main straight)
       pts.push([pHere.x, pHere.z]);
     }
   }
 
   // --- 3. Densify: target ~5 m on long straight segments, keep arcs as-is ---
   const densePts = [];
+  const sparseToDense = new Array(pts.length);
   const STRAIGHT_DENSIFY_M = 5;
   for (let i = 0; i < pts.length; i++) {
     const p0 = pts[i];
@@ -613,14 +628,16 @@ function buildLoop(rng, style) {
     const seg = Math.hypot(dx, dz);
     if (seg <= STRAIGHT_DENSIFY_M * 1.5) {
       densePts.push([p0[0], p0[1]]);
+      sparseToDense[i] = densePts.length - 1;
     } else {
       const n = Math.max(1, Math.floor(seg / STRAIGHT_DENSIFY_M));
       for (let k = 0; k < n; k++) {
-        const t = k / n;
-        densePts.push([p0[0] + dx * t, p0[1] + dz * t]);
+        if (k === 0) sparseToDense[i] = densePts.length;
+        densePts.push([p0[0] + dx * (k / n), p0[1] + dz * (k / n)]);
       }
     }
   }
+  const protectedDense = new Set(protIdx.map((i) => sparseToDense[i]));
   // The final sparse vertex is already included (it is the k=0 point of
   // the wrap segment, pushed above) - do NOT append it again: the old
   // extra push duplicated it at the end of the list and the wrap became
@@ -634,9 +651,16 @@ function buildLoop(rng, style) {
   // pushes the point along the segment and kinks the fitted spline where
   // several slides cascade on a dense cluster (pack 2 maps showed ~1.7 m
   // radius wiggles, MCPG-74). Dropping keeps the polyline a subsequence
-  // of the dense samples, so the fit stays smooth. The start point
+  // of the dense samples, so the fit stays smooth. Fillet tangent points
+  // are PROTECTED: dropping one breaks tangent continuity at the
+  // straight/arc junction (MCPG-74 kart hooks) - drop the other point
+  // instead, or slide when the other is the start point. The start point
   // (index 0) never drops; a sub-2 m wrap gap (last -> first) slides the
-  // LAST point instead so the start line never moves.
+  // LAST point instead so the start line never moves. Protection rides on
+  // a flag array spliced IN SYNC with the points (an index set goes stale
+  // after the first drop and silently deprotects later tangent points).
+  const flags = new Array(r1Pts.length).fill(0);
+  for (const i of protectedDense) flags[i] = 1;
   let guard = 0;
   while (guard++ < 10 * r1Pts.length) {
     let changed = false;
@@ -646,17 +670,33 @@ function buildLoop(rng, style) {
       const b = r1Pts[j];
       const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
       if (d >= 2) continue;
-      if (j !== 0) {
+      const aProt = flags[i] === 1;
+      const bProt = flags[j] === 1;
+      if (j === 0) {
+        // wrap pair: slide the last point away from the start point
+        const ux = d > 1e-6 ? (a[0] - b[0]) / d : -1;
+        const uz = d > 1e-6 ? (a[1] - b[1]) / d : 0;
+        a[0] = b[0] + ux * 2;
+        a[1] = b[1] + uz * 2;
+        changed = true;
+      } else if (bProt && !aProt && i !== 0) {
+        r1Pts.splice(i, 1);
+        flags.splice(i, 1); // keep protection in sync
+        changed = true;
+        break; // re-walk: indices shifted
+      } else if (bProt) {
+        // b protected and a is the start point (or also protected): slide b
+        const ux = d > 1e-6 ? (b[0] - a[0]) / d : 1;
+        const uz = d > 1e-6 ? (b[1] - a[1]) / d : 0;
+        b[0] = a[0] + ux * 2;
+        b[1] = a[1] + uz * 2;
+        changed = true;
+      } else {
         r1Pts.splice(j, 1);
+        flags.splice(j, 1); // keep protection in sync
         changed = true;
         break; // re-walk: indices shifted
       }
-      // wrap pair: slide the last point away from the start point
-      const ux = d > 1e-6 ? (a[0] - b[0]) / d : -1;
-      const uz = d > 1e-6 ? (a[1] - b[1]) / d : 0;
-      a[0] = b[0] + ux * 2;
-      a[1] = b[1] + uz * 2;
-      changed = true;
     }
     if (!changed) break; // all gaps >= 2 m
   }
@@ -792,15 +832,47 @@ function maxCurvInWindow(curv, arclen, s0, s1) {
  *  hand-authored coastal-palm, and the raw engine run count cannot
  *  separate "twisty" from "smoothed" on CR-fitted maps, so it cannot
  *  floor anything. */
+/** Corner arcs on the fitted curve: contiguous runs of curvature >= 0.010 1/m
+ *  (radius <= 100 m). For each arc: total tangent deflection (deg) and min
+ *  radius (1/m) on the same 240-sample profile the budget gates use, so
+ *  this measures what the ENGINE's fitted spline actually does - the paper
+ *  fillet radius can come out much sharper than the CR fit (MCPG-74: the
+ *  pack-3 sweep produced 95-120 deg kart-style hooks at r ~ 2.7 m). */
+function cornerShapes(curv, arclen) {
+  const N = curv.length;
+  const ds = arclen / N;
+  const hot = curv.map((c) => c >= 0.010);
+  const shapes = [];
+  let i = 0;
+  while (i < N) {
+    if (!hot[i]) { i++; continue; }
+    let j = i;
+    while (j < N && hot[j]) j++;
+    let dth = 0, kmax = 0;
+    for (let k = i; k < j; k++) { dth += curv[k] * ds; kmax = Math.max(kmax, curv[k]); }
+    shapes.push({ s: r1(i * ds), deg: Math.round((dth * 180) / Math.PI), rMin: kmax > 0 ? r1(1 / kmax) : 999 });
+    i = j;
+  }
+  // wrap merge: a corner spanning the seam (last run touches N, first run starts at 0)
+  if (shapes.length > 1 && hot[N - 1] && hot[0]) {
+    const last = shapes.pop();
+    const first = shapes[0];
+    first.deg += last.deg;
+    first.rMin = Math.min(first.rMin, last.rMin);
+    first.s = last.s;
+  }
+  return shapes;
+}
+
 const STYLE_BUDGETS = {
-  flow: { minEffCorners: 3, maxCurbRuns: 12 },
-  technical: { minEffCorners: 5, maxCurbRuns: 16 },
-  city: { minEffCorners: 4, maxCurbRuns: 16 },
-  desert: { minEffCorners: 2, maxCurbRuns: 12 },
-  alpine: { minEffCorners: 5, maxCurbRuns: 20 },
-  'city-rain': { minEffCorners: 4, maxCurbRuns: 16 },
-  lagoon: { minEffCorners: 4, maxCurbRuns: 12 },
-  canyon: { minEffCorners: 3, maxCurbRuns: 12 },
+  flow: { minEffCorners: 3, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
+  technical: { minEffCorners: 5, maxCurbRuns: 16, maxTurnDeg: 90, minCornerR: 4.5 },
+  city: { minEffCorners: 4, maxCurbRuns: 16, maxTurnDeg: 90, minCornerR: 4.5 },
+  desert: { minEffCorners: 2, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
+  alpine: { minEffCorners: 5, maxCurbRuns: 20, maxTurnDeg: 120, minCornerR: 4.5 },
+  'city-rain': { minEffCorners: 4, maxCurbRuns: 16, maxTurnDeg: 90, minCornerR: 4.5 },
+  lagoon: { minEffCorners: 4, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
+  canyon: { minEffCorners: 3, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
 };
 
 /**
@@ -818,6 +890,14 @@ const STYLE_BUDGETS = {
  *   4. per-style corner quality (see STYLE_BUDGETS): structural fillet
  *      corners with effective r >= 6 m >= minEffCorners, and the engine's
  *      curb-run count (0.021 1/m, >= 15 m runs) <= maxCurbRuns
+ *   5. F1 corner shape (MCPG-74 feedback "90 degrees turns? that's not
+ *      very f1"): a corner that deflects more than maxTurnDeg (90) is only
+ *      accepted at a WIDE radius (r >= 8 m) - F1 has plenty of wide
+ *      sweepers past 90 deg (Tamburello ~135 deg, La Source ~180 deg),
+ *      but tight kart-style L-hooks (big deflection at r < 5 m) are not
+ *      F1. Independently, any corner with >= 15 deg of deflection must
+ *      keep r >= minCornerR, so slow-but-wide Monaco-style corners pass
+ *      while tight kinks fail.
  */
 function checkBudgets(curve, arclen, lengthM, curv, styleName, effCorners) {
   const reasons = [];
@@ -899,6 +979,17 @@ function checkBudgets(curve, arclen, lengthM, curv, styleName, effCorners) {
   }
   if (effCorners < budget.minEffCorners) {
     reasons.push(`effective corners ${effCorners} < ${budget.minEffCorners} for style ${styleName} (too few visible corners)`);
+  }
+
+  // 5. F1 corner shape (see gate list above): tight hooks are the non-F1
+  //    marker - big deflection is fine at a wide radius, tight radius is
+  //    not.
+  for (const c of cornerShapes(curv, arclen)) {
+    if (c.deg > budget.maxTurnDeg && c.rMin < 8) {
+      reasons.push(`corner at s=${c.s}m bends ${c.deg}deg at r=${c.rMin}m (tight hook past ${budget.maxTurnDeg}deg - kart-style, not F1)`);
+    } else if (c.deg >= 15 && c.rMin < budget.minCornerR) {
+      reasons.push(`corner at s=${c.s}m (${c.deg}deg) has r=${c.rMin}m < ${budget.minCornerR}m (tightest allowed corner radius)`);
+    }
   }
 
   return { ok: reasons.length === 0, reasons };
@@ -1052,7 +1143,7 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
 // -------------------------------------------------------------------- CLI ---
 function fail(msg) {
   console.error(`generate-track: ${msg}`);
-  console.error('usage: node scripts/generate-track.mjs [--seed N] [--style flow|technical|city|auto] ' +
+  console.error('usage: node scripts/generate-track.mjs [--seed N] [--style flow|technical|city|desert|alpine|city-rain|lagoon|canyon|auto] ' +
     '[--out <file.json|dir>] [--pack K] [--id ID] [--name NAME] [--palette NAME|IDX]');
   process.exit(1);
 }
