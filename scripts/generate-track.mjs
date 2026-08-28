@@ -248,7 +248,8 @@ const STYLES = {
     // bright desert day: 3-5 long sweeping dune corners, two long dry runs
     roadWidthM: 13,
     K: [6, 8],
-    rRange: [195, 240],
+    rRange: [315, 380], // MCPG-74 pack 3c: 30% longer maps (was [195,240])
+    innerPass: true,
     mainDeg: [150, 175],
     straightMix: 0.35,
     filletRange: [12, 28],  // sweeping dune bends only, no hairpins
@@ -266,7 +267,8 @@ const STYLES = {
     // snow alpine at dusk: hairpin-heavy switchback spine
     roadWidthM: 12,
     K: [10, 12],
-    rRange: [195, 240],
+    rRange: [285, 345], // MCPG-74 pack 3c: 30% longer maps (was [195,240])
+    innerPass: true,
     mainDeg: [135, 155],
     straightMix: 0.25,
     filletRange: [5, 12],   // tight pool: hairpin-capable switchbacks
@@ -283,7 +285,8 @@ const STYLES = {
     // wet midnight city grid (pack 1-2 never used the rain-midnight palette)
     roadWidthM: 13,
     K: [9, 11],
-    rRange: [182, 229],
+    rRange: [295, 368], // MCPG-74 pack 3c: 30% longer maps (was [182,229])
+    innerPass: true,
     mainDeg: [120, 140],
     straightMix: 0.30,
     filletRange: [7, 15],
@@ -302,7 +305,8 @@ const STYLES = {
     // more DRS windows) - same palette mood as pack 2's breeze-cove
     roadWidthM: 13,
     K: [9, 11],
-    rRange: [195, 238],
+    rRange: [315, 380], // MCPG-74 pack 3c: 30% longer maps (was [195,238])
+    innerPass: true,
     mainDeg: [130, 155],
     straightMix: 0.40,
     filletRange: [8, 18],
@@ -320,7 +324,8 @@ const STYLES = {
     // technical preset) - same palette mood as pack 2's granite-pass
     roadWidthM: 12,
     K: [7, 9],
-    rRange: [184, 234],
+    rRange: [298, 374], // MCPG-74 pack 3c: 30% longer maps (was [184,234])
+    innerPass: true,
     mainDeg: [140, 165],
     straightMix: 0.40,
     filletRange: [10, 22],
@@ -501,6 +506,39 @@ function buildLoop(rng, style) {
   const sStartX = (anchorPos[1].x + anchorPos[K - 1].x) / 2;
   const sStartZ = (anchorPos[1].z + anchorPos[K - 1].z) / 2;
   anchorPos[0] = { x: sStartX, z: sStartZ };
+  // MCPG-74 pack 3c ("why is there so much open dead space in the middle?
+  // why not circle the tracks inside"): an INNER PASS - one run of w
+  // consecutive corner anchors pulled to 0.30-0.50 R0 so the circuit
+  // sweeps across the middle of the island instead of ringing around a
+  // dead-center hole. The run is chosen opposite the main straight
+  // (angular center >= 100 deg from angle 0) so the start/pit straight
+  // stays on the outer ring; when every candidate touches a lead-in or
+  // lead-out window (small K), the closest-to-180 candidate is used.
+  // A self-intersecting (bowtie) result is rejected by the budget gate
+  // below and reseeded - the lap must be a simple loop.
+  if (style.innerPass) {
+    const w = rng.next() < 0.5 ? 2 : 3;
+    const runs = [];
+    for (let s = 2; s + w - 1 <= K - 2; s++) {
+      let a = 0;
+      for (let k = 0; k < w; k++) a += anchorAngle[s + k];
+      a /= w;
+      const dev = Math.min(a, Math.PI * 2 - a); // distance from the main straight (angle 0)
+      if (dev >= (100 * Math.PI) / 180) runs.push({ s });
+    }
+    const safe = runs.filter((r) => r.s > 2 && r.s + w - 1 < K - 2);
+    const pool = safe.length > 0 ? safe : runs;
+    if (pool.length > 0) {
+      const chosen = pool[Math.floor(rng.next() * pool.length)];
+      const innerF = 0.30 + rng.next() * 0.20;
+      for (let k = 0; k < w; k++) {
+        const i = chosen.s + k;
+        const th = anchorAngle[i];
+        anchorPos[i] = { x: R0 * innerF * Math.cos(th), z: R0 * innerF * Math.sin(th) };
+      }
+    }
+  }
+
   // Nudge corner anchor positions by a small random offset (the star's
   // angles have already been jittered by the window sizes; this nudges
   // the position further so the layout doesn't look mechanical).
@@ -868,11 +906,11 @@ const STYLE_BUDGETS = {
   flow: { minEffCorners: 3, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
   technical: { minEffCorners: 5, maxCurbRuns: 16, maxTurnDeg: 90, minCornerR: 4.5 },
   city: { minEffCorners: 4, maxCurbRuns: 16, maxTurnDeg: 90, minCornerR: 4.5 },
-  desert: { minEffCorners: 2, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
-  alpine: { minEffCorners: 5, maxCurbRuns: 20, maxTurnDeg: 120, minCornerR: 4.5 },
-  'city-rain': { minEffCorners: 4, maxCurbRuns: 16, maxTurnDeg: 90, minCornerR: 4.5 },
-  lagoon: { minEffCorners: 4, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
-  canyon: { minEffCorners: 3, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5 },
+  desert: { minEffCorners: 2, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5, maxCenterRatio: 0.55 },
+  alpine: { minEffCorners: 5, maxCurbRuns: 20, maxTurnDeg: 120, minCornerR: 4.5, maxCenterRatio: 0.55 },
+  'city-rain': { minEffCorners: 4, maxCurbRuns: 16, maxTurnDeg: 90, minCornerR: 4.5, maxCenterRatio: 0.55 },
+  lagoon: { minEffCorners: 4, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5, maxCenterRatio: 0.55 },
+  canyon: { minEffCorners: 3, maxCurbRuns: 12, maxTurnDeg: 90, minCornerR: 4.5, maxCenterRatio: 0.55 },
 };
 
 /**
@@ -899,10 +937,67 @@ const STYLE_BUDGETS = {
  *      keep r >= minCornerR, so slow-but-wide Monaco-style corners pass
  *      while tight kinks fail.
  */
+/**
+ * Sample the fitted curve and test for non-adjacent segment crossings.
+ * Returns the approximate arc length (m) of the first crossing found, or
+ * null if the loop is simple. Bounding-box prefilter keeps this fast: on a
+ * simple loop only O(N) pairs ever reach the orientation test. Adjacent
+ * segments (and the wrap pair) are exempt.
+ */
+function findSelfIntersection(curve, arclen, samples) {
+  const N = samples;
+  const xs = new Float64Array(N);
+  const zs = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    const p = curve.getPointAt(i / N);
+    xs[i] = p.x;
+    zs[i] = p.z;
+  }
+  const ds = arclen / N;
+  const orient = (ax, az, bx, bz, cx, cz) => (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+  for (let i = 0; i < N - 1; i++) {
+    // The last segment (N-1 -> 0) is never the outer segment; it is tested
+    // as j = N-1 for every inner i >= 1, and exempt for i = 0 (adjacent).
+    const ax = xs[i];
+    const az = zs[i];
+    const bx = xs[i + 1];
+    const bz = zs[i + 1];
+    const minax = Math.min(ax, bx);
+    const maxax = Math.max(ax, bx);
+    const minaz = Math.min(az, bz);
+    const maxaz = Math.max(az, bz);
+    for (let j = i + 2; j < N; j++) {
+      if (i === 0 && j === N - 1) continue; // wrap pair: adjacent
+      const cx = xs[j];
+      const cz = zs[j];
+      if (cx < minax || cx > maxax || cz < minaz || cz > maxaz) continue;
+      const dx = xs[(j + 1) % N];
+      const dz = zs[(j + 1) % N];
+      if (Math.max(cx, dx) < minax || Math.min(cx, dx) > maxax ||
+          Math.max(cz, dz) < minaz || Math.min(cz, dz) > maxaz) continue;
+      const o1 = orient(ax, az, bx, bz, cx, cz);
+      const o2 = orient(ax, az, bx, bz, dx, dz);
+      if (o1 * o2 >= 0) continue;
+      const o3 = orient(cx, cz, dx, dz, ax, az);
+      const o4 = orient(cx, cz, dx, dz, bx, bz);
+      if (o3 * o4 < 0) return ((i + j) / 2) * ds;
+    }
+  }
+  return null;
+}
+
 function checkBudgets(curve, arclen, lengthM, curv, styleName, effCorners) {
   const reasons = [];
+
+  // 0. self-intersection (MCPG-74 pack 3c): the lap must be a simple loop.
+  //    Inner passes can pinch the circuit into a bowtie; that never ships.
+  const xInt = findSelfIntersection(curve, arclen, 1200);
+  if (xInt !== null) {
+    reasons.push(`lap self-intersects at s~${xInt.toFixed(0)}m (the circuit crosses itself - never shippable)`);
+  }
+
   const budget = STYLE_BUDGETS[styleName];
-  if (!budget) return { ok: true, reasons };
+  if (!budget) return { ok: reasons.length === 0, reasons };
 
   // 1. longest straight >= 25% of lap (and <= 40%, no dragstrip), located
   //    in [L-0.22L, L] U [0, 0.22L] (start/finish mid-straight). The half
@@ -983,12 +1078,35 @@ function checkBudgets(curve, arclen, lengthM, curv, styleName, effCorners) {
 
   // 5. F1 corner shape (see gate list above): tight hooks are the non-F1
   //    marker - big deflection is fine at a wide radius, tight radius is
-  //    not.
+  //    not. Measured on the 240-sample profile (the engine's own
+  //    CURVATURE_SAMPLES), so the gate judges exactly what the engine
+  //    sees. A higher-resolution profile was tried (MCPG-74 pack 3c) but
+  //    rejected: it aliases sub-bin spline coils (r 0.6-2 m, 150-350 deg)
+  //    that the engine never renders as corners and that ship fine.
   for (const c of cornerShapes(curv, arclen)) {
     if (c.deg > budget.maxTurnDeg && c.rMin < 8) {
       reasons.push(`corner at s=${c.s}m bends ${c.deg}deg at r=${c.rMin}m (tight hook past ${budget.maxTurnDeg}deg - kart-style, not F1)`);
     } else if (c.deg >= 15 && c.rMin < budget.minCornerR) {
       reasons.push(`corner at s=${c.s}m (${c.deg}deg) has r=${c.rMin}m < ${budget.minCornerR}m (tightest allowed corner radius)`);
+    }
+  }
+
+  // 6. dead-center gate (MCPG-74 pack 3c): the track must pass near the
+  //    middle of the island. A ring that leaves a 100m+ empty hole in the
+  //    center reads as "so much open dead space in the middle". Only set
+  //    for styles with an inner pass; ratio = closest track point / farthest
+  //    track point, both measured from the island center (the origin).
+  if (budget.maxCenterRatio !== undefined) {
+    let dMin = Infinity;
+    let dMax = 0;
+    for (let i = 0; i < 240; i++) {
+      const p = curve.getPointAt(i / 240);
+      const d = Math.hypot(p.x, p.z);
+      if (d < dMin) dMin = d;
+      if (d > dMax) dMax = d;
+    }
+    if (dMax > 0 && dMin / dMax > budget.maxCenterRatio) {
+      reasons.push(`track never comes within ${dMin.toFixed(0)}m of the island center (dead middle: ratio ${(dMin / dMax).toFixed(2)} > ${budget.maxCenterRatio})`);
     }
   }
 
@@ -1044,7 +1162,9 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
 
   const raw = makeCurve(centered);
   const rawLen = raw.getLength();
-  const lengthM = Math.min(1300, Math.max(800, Math.round(rawLen / 100) * 100));
+  // MCPG-74 pack 3c: the ceiling is 1650 now (30% longer maps; the 5 pack-3
+  // styles target ~1500-1600 m).
+  const lengthM = Math.min(1650, Math.max(800, Math.round(rawLen / 100) * 100));
   const scale = lengthM / rawLen;
   const waypoints = centered.map(([x, z]) => [r1(x * scale), r1(z * scale)]);
 
@@ -1133,6 +1253,7 @@ function tryGenerate(seed, styleName, overrides, paletteIndex) {
       curbCorners,
       effCorners,
       minTurnRadius,
+      centerM: r1(minOrigin),
       maxCoord: Math.max(...waypoints.map(([x, z]) => Math.max(Math.abs(x), Math.abs(z)))),
     },
     contractOk: contract.ok,
@@ -1229,7 +1350,7 @@ for (let k = 0; k < pack; k++) {
   pass++;
   console.log(`PASS ${id} (${def.name}) style=${styleName} L=${def.lengthM}m ` +
     `straights>=25m: ${stats.straightM}m curbRuns: ${stats.curbCorners} effCorners: ${stats.effCorners} ` +
-    `minTurnR: ${stats.minTurnRadius}m maxCoord: ${Math.round(stats.maxCoord)} ` +
+    `minTurnR: ${stats.minTurnRadius}m center: ${stats.centerM ?? '?'}m maxCoord: ${Math.round(stats.maxCoord)} ` +
     `attempts=${stats.attempts ?? 1}`);
   for (const w of warnings) console.log(`     warning: ${w}`);
 }
